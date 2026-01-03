@@ -5,7 +5,7 @@ Authentication utilities for Google SSO.
 import streamlit as st
 
 # Set to True to enable authentication, False to disable
-AUTH_ENABLED = False
+AUTH_ENABLED = True
 
 # Access control mode:
 # - "open": Any Google account can log in
