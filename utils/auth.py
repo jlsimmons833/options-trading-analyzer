@@ -117,7 +117,11 @@ def check_authentication():
         if not creds_path:
             st.error("Google credentials not configured.")
             st.info("Please add GOOGLE_CREDENTIALS_JSON to your Streamlit secrets.")
+            st.info(f"Available secrets keys: {list(st.secrets.keys()) if hasattr(st, 'secrets') else 'None'}")
             return False
+
+        # Debug: show that credentials were loaded
+        st.sidebar.caption(f"Auth: credentials loaded")
 
         authenticator = Authenticate(
             secret_credentials_path=creds_path,
@@ -146,6 +150,7 @@ def check_authentication():
 
     except Exception as e:
         st.error(f"Authentication error: {e}")
+        st.code(str(e))  # Show full error
         st.info("Please check your Google OAuth configuration.")
         return False
 
