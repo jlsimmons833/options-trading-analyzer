@@ -3,6 +3,9 @@ Authentication utilities for Google SSO.
 """
 
 import streamlit as st
+import json
+import tempfile
+import os
 
 # Set to True to enable authentication, False to disable
 AUTH_ENABLED = True
@@ -13,10 +16,51 @@ AUTH_ENABLED = True
 ACCESS_MODE = "whitelist"
 
 
+def get_credentials_path():
+    """
+    Get path to Google credentials file.
+    Creates a temp file from secrets if running on Streamlit Cloud.
+    """
+    # Check if credentials file exists locally
+    if os.path.exists('google_credentials.json'):
+        return 'google_credentials.json'
+
+    # Try to create from secrets
+    try:
+        # Option 1: JSON string in secrets
+        if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
+            creds = st.secrets["GOOGLE_CREDENTIALS_JSON"]
+            if isinstance(creds, str):
+                creds_dict = json.loads(creds)
+            else:
+                creds_dict = dict(creds)
+
+            # Write to temp file
+            temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+            json.dump(creds_dict, temp_file)
+            temp_file.close()
+            return temp_file.name
+
+        # Option 2: Structured TOML in secrets
+        if "google_credentials" in st.secrets:
+            creds_dict = dict(st.secrets["google_credentials"])
+
+            # Write to temp file
+            temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+            json.dump(creds_dict, temp_file)
+            temp_file.close()
+            return temp_file.name
+
+    except Exception as e:
+        st.error(f"Error loading credentials: {e}")
+
+    return None
+
+
 def get_allowed_users():
     """Get list of allowed user emails from secrets."""
     try:
-        return st.secrets.get("ALLOWED_USERS", [])
+        return list(st.secrets.get("ALLOWED_USERS", []))
     except Exception:
         return []
 
@@ -24,7 +68,7 @@ def get_allowed_users():
 def get_admin_users():
     """Get list of admin user emails from secrets."""
     try:
-        return st.secrets.get("ADMIN_USERS", [])
+        return list(st.secrets.get("ADMIN_USERS", []))
     except Exception:
         return []
 
@@ -69,9 +113,15 @@ def check_authentication():
     try:
         from streamlit_google_auth import Authenticate
 
+        creds_path = get_credentials_path()
+        if not creds_path:
+            st.error("Google credentials not configured.")
+            st.info("Please add GOOGLE_CREDENTIALS_JSON to your Streamlit secrets.")
+            return False
+
         authenticator = Authenticate(
-            secret_credentials_path='google_credentials.json',
-            cookie_name='auth_cookie',
+            secret_credentials_path=creds_path,
+            cookie_name='trading_analyzer_auth',
             cookie_key=st.secrets.get("COOKIE_KEY", "default_secret_key"),
             redirect_uri=st.secrets.get("REDIRECT_URI", "http://localhost:8501"),
         )
@@ -96,7 +146,7 @@ def check_authentication():
 
     except Exception as e:
         st.error(f"Authentication error: {e}")
-        st.info("Please configure Google OAuth credentials.")
+        st.info("Please check your Google OAuth configuration.")
         return False
 
 
@@ -124,13 +174,16 @@ def logout():
     if AUTH_ENABLED:
         try:
             from streamlit_google_auth import Authenticate
-            authenticator = Authenticate(
-                secret_credentials_path='google_credentials.json',
-                cookie_name='auth_cookie',
-                cookie_key=st.secrets.get("COOKIE_KEY", "default_secret_key"),
-                redirect_uri=st.secrets.get("REDIRECT_URI", "http://localhost:8501"),
-            )
-            authenticator.logout()
+
+            creds_path = get_credentials_path()
+            if creds_path:
+                authenticator = Authenticate(
+                    secret_credentials_path=creds_path,
+                    cookie_name='trading_analyzer_auth',
+                    cookie_key=st.secrets.get("COOKIE_KEY", "default_secret_key"),
+                    redirect_uri=st.secrets.get("REDIRECT_URI", "http://localhost:8501"),
+                )
+                authenticator.logout()
         except Exception:
             pass
 
