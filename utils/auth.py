@@ -120,14 +120,16 @@ def check_authentication():
             st.info(f"Available secrets keys: {list(st.secrets.keys()) if hasattr(st, 'secrets') else 'None'}")
             return False
 
-        # Debug: show that credentials were loaded
+        # Debug: show what's being used
+        redirect_uri = st.secrets.get("REDIRECT_URI", "http://localhost:8501")
         st.sidebar.caption(f"Auth: credentials loaded")
+        st.sidebar.caption(f"Redirect: {redirect_uri}")
 
         authenticator = Authenticate(
             secret_credentials_path=creds_path,
             cookie_name='trading_analyzer_auth',
             cookie_key=st.secrets.get("COOKIE_KEY", "default_secret_key"),
-            redirect_uri=st.secrets.get("REDIRECT_URI", "http://localhost:8501"),
+            redirect_uri=redirect_uri,
         )
 
         authenticator.check_authentification()
