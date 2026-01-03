@@ -8,7 +8,7 @@ import tempfile
 import os
 
 # Set to True to enable authentication, False to disable
-AUTH_ENABLED = True
+AUTH_ENABLED = False
 
 # Access control mode:
 # - "open": Any Google account can log in
