@@ -4,16 +4,17 @@ Dashboard Page - File upload, summary metrics, and quick insights.
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import sys
 from pathlib import Path
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import PAGE_CONFIG
+from config import PAGE_CONFIG, MIN_TRADES_FOR_STATS, QUARTERS
 from utils.data_processing import load_and_process_data, detect_file_format
 from utils.calculations import calculate_expected_value, calculate_strategy_metrics
-from utils.visualizations import create_ev_bar_chart, create_pie_chart
+from utils.visualizations import create_ev_bar_chart, create_pie_chart, create_ev_heatmap
 from utils.filters import initialize_session_state, render_sidebar_filters, apply_filters
 
 st.set_page_config(
@@ -174,3 +175,203 @@ with col3:
 with col4:
     avg_duration = filtered_df['Duration_Days'].mean()
     st.metric("Avg Trade Duration", f"{avg_duration:.1f} days")
+
+# Year-over-Year Comparison
+st.header("Year-over-Year Comparison")
+
+st.markdown("""
+Compare strategy performance for the same time period across different years.
+Select a date range (e.g., Nov 15 - Dec 31) to see how each strategy performed during that period in each year.
+""")
+
+available_years = sorted(filtered_df['Year'].unique())
+
+if len(available_years) < 2:
+    st.info("Need at least 2 years of data for year-over-year comparison.")
+else:
+    with st.expander("Year-over-Year Settings", expanded=True):
+        # Period type selection
+        period_type = st.radio(
+            "Select period type",
+            options=['Standard Quarter', 'Custom Date Range'],
+            horizontal=True,
+            key="yoy_period_type",
+        )
+
+        if period_type == 'Standard Quarter':
+            selected_period = st.selectbox(
+                "Select Quarter",
+                options=QUARTERS,
+                key="yoy_quarter",
+            )
+            period_label = selected_period
+        else:
+            col1, col2 = st.columns(2)
+
+            with col1:
+                yoy_start_month = st.selectbox(
+                    "Start Month",
+                    options=list(range(1, 13)),
+                    format_func=lambda x: pd.Timestamp(2000, x, 1).strftime('%B'),
+                    index=10,  # November
+                    key="yoy_start_month",
+                )
+                yoy_start_day = st.number_input(
+                    "Start Day",
+                    min_value=1,
+                    max_value=31,
+                    value=15,
+                    key="yoy_start_day",
+                )
+
+            with col2:
+                yoy_end_month = st.selectbox(
+                    "End Month",
+                    options=list(range(1, 13)),
+                    format_func=lambda x: pd.Timestamp(2000, x, 1).strftime('%B'),
+                    index=11,  # December
+                    key="yoy_end_month",
+                )
+                yoy_end_day = st.number_input(
+                    "End Day",
+                    min_value=1,
+                    max_value=31,
+                    value=31,
+                    key="yoy_end_day",
+                )
+
+            period_label = f"{pd.Timestamp(2000, yoy_start_month, 1).strftime('%b')} {yoy_start_day} - {pd.Timestamp(2000, yoy_end_month, 1).strftime('%b')} {yoy_end_day}"
+
+        # Strategy filter for YoY heatmap
+        st.markdown("---")
+        all_strategies = sorted(filtered_df['Strategy'].unique())
+        yoy_strategies = st.multiselect(
+            "Filter strategies for heatmap",
+            options=all_strategies,
+            default=all_strategies,
+            key="yoy_strategy_filter",
+        )
+
+        # Sorting options
+        col1, col2 = st.columns(2)
+        with col1:
+            yoy_sort_by = st.selectbox(
+                "Sort strategies by year",
+                options=['None (Alphabetical)'] + [str(y) for y in available_years],
+                key="yoy_sort_by",
+            )
+        with col2:
+            yoy_sort_order = st.radio(
+                "Sort order",
+                options=['Descending', 'Ascending'],
+                horizontal=True,
+                key="yoy_sort_order",
+            )
+
+    if not yoy_strategies:
+        st.warning("Please select at least one strategy.")
+    else:
+        # Calculate YoY matrix
+        def in_date_range(date, start_month, start_day, end_month, end_day):
+            """Check if date falls within the month/day range."""
+            month, day = date.month, date.day
+            start = (start_month, start_day)
+            end = (end_month, end_day)
+
+            if start <= end:
+                return start <= (month, day) <= end
+            else:
+                # Wrapping range (e.g., Nov 15 - Feb 15)
+                return (month, day) >= start or (month, day) <= end
+
+        def get_quarter_range(quarter):
+            """Get month/day range for a standard quarter."""
+            ranges = {
+                'Q1': (1, 1, 3, 31),
+                'Q2': (4, 1, 6, 30),
+                'Q3': (7, 1, 9, 30),
+                'Q4': (10, 1, 12, 31),
+            }
+            return ranges[quarter]
+
+        # Build the matrix
+        yoy_matrix_data = []
+
+        for strategy in yoy_strategies:
+            row = {'Strategy': strategy}
+
+            for year in available_years:
+                # Filter by year
+                year_df = filtered_df[(filtered_df['Strategy'] == strategy) & (filtered_df['Year'] == year)]
+
+                # Filter by period
+                if period_type == 'Standard Quarter':
+                    period_df = year_df[year_df['Quarter'] == selected_period]
+                else:
+                    period_df = year_df[year_df['Date Opened'].apply(
+                        lambda d: in_date_range(d, yoy_start_month, int(yoy_start_day), yoy_end_month, int(yoy_end_day))
+                    )]
+
+                if len(period_df) >= MIN_TRADES_FOR_STATS:
+                    row[str(year)] = calculate_expected_value(period_df)
+                else:
+                    row[str(year)] = np.nan
+
+            yoy_matrix_data.append(row)
+
+        yoy_matrix = pd.DataFrame(yoy_matrix_data).set_index('Strategy')
+
+        # Apply sorting
+        if yoy_sort_by != 'None (Alphabetical)':
+            ascending = yoy_sort_order == 'Ascending'
+            if yoy_sort_by in yoy_matrix.columns:
+                yoy_matrix = yoy_matrix.sort_values(
+                    by=yoy_sort_by,
+                    ascending=ascending,
+                    na_position='last'
+                )
+        else:
+            yoy_matrix = yoy_matrix.sort_index()
+
+        # Create and display heatmap
+        yoy_heatmap = create_ev_heatmap(
+            yoy_matrix,
+            title=f"Year-over-Year Comparison: {period_label}",
+            x_title="Year",
+            y_title="Strategy",
+        )
+        st.plotly_chart(yoy_heatmap, use_container_width=True)
+
+        # Summary statistics
+        st.subheader("Period Summary by Year")
+
+        year_summary = []
+        for year in available_years:
+            if period_type == 'Standard Quarter':
+                sm, sd, em, ed = get_quarter_range(selected_period)
+            else:
+                sm, sd, em, ed = yoy_start_month, int(yoy_start_day), yoy_end_month, int(yoy_end_day)
+
+            year_df = filtered_df[filtered_df['Year'] == year]
+            if period_type == 'Standard Quarter':
+                period_df = year_df[year_df['Quarter'] == selected_period]
+            else:
+                period_df = year_df[year_df['Date Opened'].apply(
+                    lambda d: in_date_range(d, sm, sd, em, ed)
+                )]
+
+            if len(period_df) >= MIN_TRADES_FOR_STATS:
+                year_summary.append({
+                    'Year': year,
+                    'Trades': len(period_df),
+                    'Win Rate': f"{(period_df['P/L'] > 0).mean() * 100:.1f}%",
+                    'Total P/L': f"${period_df['P/L'].sum():,.2f}",
+                    'Expected Value': f"${calculate_expected_value(period_df):.2f}",
+                })
+
+        if year_summary:
+            st.dataframe(
+                pd.DataFrame(year_summary),
+                use_container_width=True,
+                hide_index=True,
+            )
