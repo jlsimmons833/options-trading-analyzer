@@ -24,12 +24,19 @@ from utils.filters import (
     apply_filters,
     get_year_filter_options,
 )
+from utils.auth import check_authentication, render_user_info_sidebar
 
 st.set_page_config(
     page_title=f"Quarterly Analysis - {PAGE_CONFIG['page_title']}",
     page_icon=PAGE_CONFIG['page_icon'],
     layout=PAGE_CONFIG['layout'],
 )
+
+# Auth check
+if not check_authentication():
+    st.stop()
+
+render_user_info_sidebar()
 
 st.title("Quarterly Analysis")
 

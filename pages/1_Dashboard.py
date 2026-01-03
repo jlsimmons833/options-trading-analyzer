@@ -16,12 +16,19 @@ from utils.data_processing import load_and_process_data, detect_file_format
 from utils.calculations import calculate_expected_value, calculate_strategy_metrics
 from utils.visualizations import create_ev_bar_chart, create_pie_chart, create_ev_heatmap
 from utils.filters import initialize_session_state, render_sidebar_filters, apply_filters
+from utils.auth import check_authentication, render_user_info_sidebar
 
 st.set_page_config(
     page_title=f"Dashboard - {PAGE_CONFIG['page_title']}",
     page_icon=PAGE_CONFIG['page_icon'],
     layout=PAGE_CONFIG['layout'],
 )
+
+# Auth check
+if not check_authentication():
+    st.stop()
+
+render_user_info_sidebar()
 
 st.title("Dashboard")
 

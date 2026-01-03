@@ -5,6 +5,7 @@ Analyzes options trading performance from Options Omega export files.
 
 import streamlit as st
 from config import PAGE_CONFIG
+from utils.auth import check_authentication, render_user_info_sidebar
 
 # Page configuration
 st.set_page_config(
@@ -13,6 +14,12 @@ st.set_page_config(
     layout=PAGE_CONFIG['layout'],
     initial_sidebar_state=PAGE_CONFIG['initial_sidebar_state'],
 )
+
+# Auth check
+if not check_authentication():
+    st.stop()
+
+render_user_info_sidebar()
 
 # Main page content
 st.title("Trading Strategy Analyzer")

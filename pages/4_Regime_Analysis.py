@@ -22,12 +22,19 @@ from utils.visualizations import (
     create_prediction_chart,
 )
 from utils.filters import render_sidebar_filters, apply_filters
+from utils.auth import check_authentication, render_user_info_sidebar
 
 st.set_page_config(
     page_title=f"Regime Analysis - {PAGE_CONFIG['page_title']}",
     page_icon=PAGE_CONFIG['page_icon'],
     layout=PAGE_CONFIG['layout'],
 )
+
+# Auth check
+if not check_authentication():
+    st.stop()
+
+render_user_info_sidebar()
 
 st.title("Regime Analysis")
 
