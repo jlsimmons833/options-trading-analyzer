@@ -516,3 +516,255 @@ def calculate_ev_sensitivity(trades_df, exclude_n=1):
         sensitivity = 0
 
     return (base_ev, ev_without_best, ev_without_worst, sensitivity)
+
+
+def interpret_ev_reliability(cv, sensitivity_score, trade_count):
+    """
+    Generate a synthesized interpretation of EV reliability based on
+    the combination of CV, sensitivity, and sample size.
+
+    Returns: dict with:
+    - verdict: overall reliability verdict
+    - icon: emoji indicator
+    - color: color for display (green/blue/orange/red)
+    - summary: one-line summary
+    - explanation: detailed explanation
+    - implications: list of practical implications
+    - confidence_level: 1-5 scale
+    """
+
+    # Handle missing data
+    if pd.isna(cv) or pd.isna(sensitivity_score):
+        return {
+            'verdict': 'Insufficient Data',
+            'icon': '❓',
+            'color': 'gray',
+            'summary': 'Not enough data to assess reliability.',
+            'explanation': 'Need more trades to calculate meaningful statistics.',
+            'implications': ['Gather more trade data before relying on EV'],
+            'confidence_level': 0,
+        }
+
+    # Categorize CV
+    if cv < 0.5:
+        cv_level = 'low'
+    elif cv < 1.0:
+        cv_level = 'moderate'
+    elif cv < 2.0:
+        cv_level = 'high'
+    else:
+        cv_level = 'very_high'
+
+    # Categorize sensitivity
+    if sensitivity_score < 10:
+        sens_level = 'low'
+    elif sensitivity_score < 25:
+        sens_level = 'moderate'
+    else:
+        sens_level = 'high'
+
+    # Sample size factor
+    if trade_count >= 100:
+        sample_quality = 'excellent'
+    elif trade_count >= 50:
+        sample_quality = 'good'
+    elif trade_count >= 30:
+        sample_quality = 'adequate'
+    else:
+        sample_quality = 'limited'
+
+    # Matrix of interpretations based on CV and Sensitivity combinations
+    interpretations = {
+        # Low CV combinations
+        ('low', 'low'): {
+            'verdict': 'Highly Reliable',
+            'icon': '✅',
+            'color': 'green',
+            'summary': 'EV is highly trustworthy. Consistent outcomes with no outlier influence.',
+            'explanation': 'This strategy produces tight, predictable outcomes. The low variability (CV) means trades cluster around the expected value, and low sensitivity confirms no single trade is skewing the results.',
+            'implications': [
+                'EV is a strong predictor of future performance',
+                'Can size positions with higher confidence',
+                'Strategy behaves consistently across trades',
+            ],
+            'confidence_level': 5,
+        },
+        ('low', 'moderate'): {
+            'verdict': 'Reliable',
+            'icon': '✅',
+            'color': 'green',
+            'summary': 'EV is reliable, though a few trades have moderate impact.',
+            'explanation': 'Outcomes are generally consistent, but some individual trades have noticeable influence on the average. This is normal for strategies with occasional larger wins or losses.',
+            'implications': [
+                'EV is a good estimate of expected performance',
+                'Monitor for trades that deviate significantly',
+                'Consider if outlier trades are repeatable or flukes',
+            ],
+            'confidence_level': 4,
+        },
+        ('low', 'high'): {
+            'verdict': 'Caution: Outlier-Dependent',
+            'icon': '⚠️',
+            'color': 'orange',
+            'summary': 'Normally consistent, but EV is heavily influenced by specific trades.',
+            'explanation': 'Most trades are consistent, but one or a few extreme trades are significantly impacting the EV. This could be a few big wins masking a mediocre strategy, or big losses dragging down an otherwise good one.',
+            'implications': [
+                'Investigate the outlier trades - are they repeatable?',
+                'EV may not reflect typical trade outcomes',
+                'Consider the median P/L as an alternative measure',
+            ],
+            'confidence_level': 2,
+        },
+
+        # Moderate CV combinations
+        ('moderate', 'low'): {
+            'verdict': 'Reliable with Normal Variance',
+            'icon': '👍',
+            'color': 'blue',
+            'summary': 'EV is trustworthy. Variance is evenly distributed across trades.',
+            'explanation': 'There is meaningful variation in trade outcomes, but it is spread evenly - no single trade dominates. This is healthy variance that should average out over time.',
+            'implications': [
+                'EV is a reasonable long-term expectation',
+                'Expect moderate swings in short-term results',
+                'Larger sample sizes will converge to EV',
+            ],
+            'confidence_level': 4,
+        },
+        ('moderate', 'moderate'): {
+            'verdict': 'Moderately Reliable',
+            'icon': '👍',
+            'color': 'blue',
+            'summary': 'EV is a reasonable estimate with typical trading variance.',
+            'explanation': 'Both variance and outlier influence are at moderate levels. This is common for most trading strategies. The EV gives a reasonable expectation, but individual results will vary.',
+            'implications': [
+                'Use EV as a guide, not a guarantee',
+                'Results will vary - plan for drawdowns',
+                'More trades will improve confidence',
+            ],
+            'confidence_level': 3,
+        },
+        ('moderate', 'high'): {
+            'verdict': 'Outlier-Influenced',
+            'icon': '⚠️',
+            'color': 'orange',
+            'summary': 'EV is skewed by specific trades. Dig deeper before trusting it.',
+            'explanation': 'A few trades are disproportionately affecting the EV. The headline number may not represent typical performance. Examine what drove those outlier trades.',
+            'implications': [
+                'Review the best and worst trades individually',
+                'Ask: would those trades happen again?',
+                'Consider reporting EV with and without outliers',
+            ],
+            'confidence_level': 2,
+        },
+
+        # High CV combinations
+        ('high', 'low'): {
+            'verdict': 'Distributed Variance',
+            'icon': '📊',
+            'color': 'blue',
+            'summary': 'EV is trustworthy, but expect a volatile ride. Variance is real but evenly spread.',
+            'explanation': 'Individual trades vary widely from the average, but this variance is distributed across many trades - not caused by outliers. The EV is a fair long-term estimate, but short-term results will swing significantly.',
+            'implications': [
+                'Trust the EV as a long-term average',
+                'Prepare for significant trade-to-trade swings',
+                'Position sizing and risk management are critical',
+                'Need many trades to realize the expected value',
+            ],
+            'confidence_level': 3,
+        },
+        ('high', 'moderate'): {
+            'verdict': 'High Variance Strategy',
+            'icon': '📊',
+            'color': 'orange',
+            'summary': 'Volatile strategy with some outlier influence. Use EV cautiously.',
+            'explanation': 'This strategy has high variance, and some of that is driven by specific outlier trades. The EV is a rough guide at best. Performance will be choppy and somewhat unpredictable.',
+            'implications': [
+                'EV is a rough estimate only',
+                'High variance + outlier influence = less predictable',
+                'Consider smaller position sizes',
+                'May need to evaluate if variance is acceptable',
+            ],
+            'confidence_level': 2,
+        },
+        ('high', 'high'): {
+            'verdict': 'Unreliable: Outlier-Driven',
+            'icon': '🚨',
+            'color': 'red',
+            'summary': 'EV is not reliable. Results are volatile AND driven by outliers.',
+            'explanation': 'High variance combined with high sensitivity to outliers means the EV is heavily influenced by a few extreme trades. The number you see may not represent what to expect going forward.',
+            'implications': [
+                'Do not rely on the EV for decision-making',
+                'Investigate the outlier trades thoroughly',
+                'Consider if this strategy has too much randomness',
+                'May need fundamental changes or more data',
+            ],
+            'confidence_level': 1,
+        },
+
+        # Very high CV combinations
+        ('very_high', 'low'): {
+            'verdict': 'Extreme but Distributed Variance',
+            'icon': '📊',
+            'color': 'orange',
+            'summary': 'Very high variance, but evenly distributed. EV is valid but highly uncertain.',
+            'explanation': 'Trade outcomes vary extremely widely, but no single trade dominates. This could be a legitimate high-variance strategy (like lottery-style trades). The EV may be accurate long-term, but convergence will be very slow.',
+            'implications': [
+                'EV may be correct but will take many trades to realize',
+                'Expect extreme swings in performance',
+                'Only allocate capital you can afford to see swing wildly',
+                'Consider if this variance level is acceptable for you',
+            ],
+            'confidence_level': 2,
+        },
+        ('very_high', 'moderate'): {
+            'verdict': 'Very High Variance',
+            'icon': '🚨',
+            'color': 'red',
+            'summary': 'Extreme variance with outlier influence. EV is unreliable.',
+            'explanation': 'The strategy produces wildly different outcomes, and some outliers are influencing the average. This level of unpredictability makes the EV difficult to trust.',
+            'implications': [
+                'EV should not be primary decision factor',
+                'Evaluate if the strategy mechanics are sound',
+                'Consider if market conditions caused the variance',
+                'May need to revisit strategy rules',
+            ],
+            'confidence_level': 1,
+        },
+        ('very_high', 'high'): {
+            'verdict': 'Highly Unreliable',
+            'icon': '🚨',
+            'color': 'red',
+            'summary': 'Do not trust this EV. Extreme variance and outlier-driven.',
+            'explanation': 'This is the least reliable combination. Extreme variance means outcomes are all over the map, and high sensitivity means a few trades are dominating the average. The EV number is essentially meaningless for prediction.',
+            'implications': [
+                'This EV should not inform trading decisions',
+                'Fundamental review of strategy is needed',
+                'Consider if there is a systematic issue',
+                'More data unlikely to help if strategy is flawed',
+            ],
+            'confidence_level': 0,
+        },
+    }
+
+    # Get the interpretation
+    key = (cv_level, sens_level)
+    result = interpretations.get(key, interpretations[('moderate', 'moderate')])
+
+    # Adjust confidence based on sample size
+    sample_adjustments = {
+        'excellent': 0,
+        'good': 0,
+        'adequate': -1,
+        'limited': -1,
+    }
+
+    result = result.copy()  # Don't modify the original
+    result['confidence_level'] = max(0, result['confidence_level'] + sample_adjustments[sample_quality])
+
+    # Add sample size note if limited
+    if sample_quality in ('adequate', 'limited'):
+        result['implications'] = result['implications'] + [
+            f'Sample size ({trade_count} trades) is limited - gather more data for higher confidence'
+        ]
+
+    return result

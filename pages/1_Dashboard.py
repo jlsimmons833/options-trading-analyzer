@@ -18,6 +18,7 @@ from utils.calculations import (
     calculate_strategy_metrics,
     calculate_ev_reliability_metrics,
     calculate_ev_sensitivity,
+    interpret_ev_reliability,
 )
 from utils.visualizations import (
     create_ev_bar_chart,
@@ -232,6 +233,49 @@ if deep_dive_strategies:
         reliability = calculate_ev_reliability_metrics(strategy_df, period_start, period_end)
         sensitivity = calculate_ev_sensitivity(strategy_df)
 
+        # Get synthesized interpretation
+        sensitivity_score = sensitivity[3] if not pd.isna(sensitivity[3]) else None
+        interpretation = interpret_ev_reliability(
+            reliability['cv'],
+            sensitivity_score,
+            reliability['trade_count']
+        )
+
+        # Synthesized Takeaway Box (prominent display)
+        takeaway_colors = {
+            'green': ('rgba(40, 167, 69, 0.15)', '#28a745'),
+            'blue': ('rgba(0, 123, 255, 0.15)', '#007bff'),
+            'orange': ('rgba(255, 165, 0, 0.15)', '#fd7e14'),
+            'red': ('rgba(220, 53, 69, 0.15)', '#dc3545'),
+            'gray': ('rgba(128, 128, 128, 0.15)', '#6c757d'),
+        }
+        bg_color, border_color = takeaway_colors.get(interpretation['color'], takeaway_colors['gray'])
+
+        st.markdown(f"""
+        <div style="
+            background-color: {bg_color};
+            border-left: 4px solid {border_color};
+            padding: 15px 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        ">
+            <div style="font-size: 1.3em; font-weight: bold; margin-bottom: 8px;">
+                {interpretation['icon']} {interpretation['verdict']}
+            </div>
+            <div style="font-size: 1em; margin-bottom: 10px;">
+                {interpretation['summary']}
+            </div>
+            <div style="font-size: 0.9em; color: #555;">
+                {interpretation['explanation']}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Practical implications (collapsible)
+        with st.expander("Practical Implications", expanded=False):
+            for impl in interpretation['implications']:
+                st.markdown(f"• {impl}")
+
         # Row 1: Key metrics
         metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
 
@@ -269,11 +313,23 @@ if deep_dive_strategies:
                 st.metric("Std Deviation", "N/A")
 
         with metric_col4:
-            # Reliability indicator
-            if reliability['is_reliable']:
-                st.metric("Reliability", "Good", delta="Sufficient data", delta_color="normal")
-            else:
-                st.metric("Reliability", "Caution", delta="Limited data", delta_color="inverse")
+            # Confidence level from interpretation
+            conf_level = interpretation['confidence_level']
+            conf_labels = {
+                5: ("Very High", "normal"),
+                4: ("High", "normal"),
+                3: ("Moderate", "off"),
+                2: ("Low", "inverse"),
+                1: ("Very Low", "inverse"),
+                0: ("Unreliable", "inverse"),
+            }
+            conf_label, conf_delta_color = conf_labels.get(conf_level, ("Unknown", "off"))
+            st.metric(
+                "Confidence",
+                conf_label,
+                delta=f"Level {conf_level}/5",
+                delta_color=conf_delta_color,
+            )
 
         # Row 2: CV gauge and interpretation + P/L distribution
         viz_col1, viz_col2 = st.columns([1, 2])
