@@ -19,6 +19,9 @@ from utils.calculations import (
     calculate_sharpe_like_ratio,
     calculate_max_drawdown,
     get_best_strategies_by_quarter,
+    calculate_strategy_bp_requirements,
+    calculate_portfolio_bp,
+    simulate_portfolio_with_allocation,
 )
 from utils.visualizations import (
     create_equity_curve,
@@ -183,6 +186,116 @@ if not selected_strategies:
     st.info("Please select at least one strategy to build a portfolio.")
     st.stop()
 
+# Trade Allocation & Buying Power Section
+st.header("Trade Allocation & Buying Power")
+
+st.markdown("""
+Configure how many concurrent trades to run for each strategy. This affects:
+- **Buying Power (BP)** required for the portfolio
+- **Equity Curve** simulation (P/L scaled by allocation)
+- **Drawdown** analysis
+""")
+
+# Initialize allocations in session state if not present
+if 'trade_allocations' not in st.session_state:
+    st.session_state.trade_allocations = {}
+
+# Build the allocation interface
+allocation_data = []
+trade_allocations = {}
+
+# Check if Margin Req. column exists
+has_margin_data = 'Margin Req.' in scenario_df.columns
+
+if not has_margin_data:
+    st.warning("⚠️ 'Margin Req.' column not found in data. BP estimates will not be available.")
+
+col1, col2 = st.columns([3, 1])
+
+with col2:
+    # Quick set buttons
+    st.markdown("**Quick Set**")
+    quick_col1, quick_col2 = st.columns(2)
+    with quick_col1:
+        if st.button("All to 1", key="set_all_1"):
+            for strategy in selected_strategies:
+                st.session_state[f"alloc_{strategy}"] = 1
+            st.rerun()
+    with quick_col2:
+        if st.button("All to 2", key="set_all_2"):
+            for strategy in selected_strategies:
+                st.session_state[f"alloc_{strategy}"] = 2
+            st.rerun()
+
+with col1:
+    st.markdown("**Set trades per strategy:**")
+
+# Create allocation inputs for each strategy
+alloc_cols = st.columns(min(len(selected_strategies), 4))
+
+for i, strategy in enumerate(selected_strategies):
+    col_idx = i % 4
+    with alloc_cols[col_idx]:
+        # Get BP requirements for this strategy
+        bp_req = calculate_strategy_bp_requirements(scenario_df, strategy)
+
+        # Get current allocation from session state or default to 1
+        default_alloc = st.session_state.get(f"alloc_{strategy}", 1)
+
+        allocation = st.number_input(
+            f"{strategy[:20]}..." if len(strategy) > 20 else strategy,
+            min_value=0,
+            max_value=10,
+            value=default_alloc,
+            step=1,
+            key=f"alloc_{strategy}",
+            help=f"Max BP/trade: ${bp_req['max_bp']:,.0f}" if bp_req['max_bp'] > 0 else "BP data not available"
+        )
+
+        trade_allocations[strategy] = allocation
+
+        # Store allocation data for display
+        allocation_data.append({
+            'Strategy': strategy,
+            'Trades Allocated': allocation,
+            'Max BP/Trade': bp_req['max_bp'],
+            'Avg BP/Trade': bp_req['avg_bp'],
+            'Total BP': bp_req['max_bp'] * allocation,
+        })
+
+# Calculate total portfolio BP
+bp_result = calculate_portfolio_bp(scenario_df, trade_allocations)
+
+# Display BP Summary
+st.markdown("---")
+st.subheader("Buying Power Summary")
+
+bp_col1, bp_col2, bp_col3 = st.columns(3)
+
+with bp_col1:
+    st.metric(
+        "Total Buying Power Required",
+        f"${bp_result['total_bp']:,.0f}",
+        help="Sum of (Max BP per trade × Allocated trades) for all strategies"
+    )
+
+with bp_col2:
+    active_strategies = sum(1 for a in trade_allocations.values() if a > 0)
+    st.metric("Active Strategies", f"{active_strategies} of {len(selected_strategies)}")
+
+with bp_col3:
+    total_allocated_trades = sum(trade_allocations.values())
+    st.metric("Total Concurrent Trades", total_allocated_trades)
+
+# Detailed BP table
+with st.expander("Detailed BP by Strategy", expanded=False):
+    bp_df = pd.DataFrame(allocation_data)
+    bp_df['Max BP/Trade'] = bp_df['Max BP/Trade'].apply(lambda x: f"${x:,.0f}" if x > 0 else "N/A")
+    bp_df['Avg BP/Trade'] = bp_df['Avg BP/Trade'].apply(lambda x: f"${x:,.0f}" if x > 0 else "N/A")
+    bp_df['Total BP'] = bp_df['Total BP'].apply(lambda x: f"${x:,.0f}" if x > 0 else "N/A")
+
+    st.dataframe(bp_df, use_container_width=True, hide_index=True)
+
 # Portfolio Analysis Panel
 st.header("Portfolio Analysis")
 
@@ -206,41 +319,127 @@ with col4:
 with col5:
     st.metric("Max Drawdown", f"${portfolio_metrics['max_drawdown']:.2f}")
 
-# Portfolio Equity Curve
+# Portfolio Equity Curve (with allocation scaling)
 st.subheader("Portfolio Equity Curve")
 
-portfolio_trades = scenario_df[scenario_df['Strategy'].isin(selected_strategies)].copy()
-portfolio_trades = portfolio_trades.sort_values('Date Closed')
+# Check if any trades are allocated
+active_allocations = {k: v for k, v in trade_allocations.items() if v > 0}
 
-if len(portfolio_trades) > 0:
-    equity_curve = create_equity_curve(portfolio_trades, title="Combined Portfolio Equity Curve")
-    st.plotly_chart(equity_curve, use_container_width=True)
+if not active_allocations:
+    st.warning("No trades allocated. Set at least one strategy to 1 or more trades.")
+else:
+    # Simulate portfolio with allocations
+    simulated_portfolio = simulate_portfolio_with_allocation(
+        scenario_df,
+        active_allocations,
+        start_capital=bp_result['total_bp'] if bp_result['total_bp'] > 0 else 10000
+    )
 
-    # Drawdown chart
-    col1, col2 = st.columns(2)
+    if len(simulated_portfolio) > 0:
+        # Create equity curve from simulated data
+        import plotly.graph_objects as go
+        from config import COLORS
 
-    with col1:
-        drawdown_chart = create_drawdown_chart(portfolio_trades, title="Portfolio Drawdown")
-        st.plotly_chart(drawdown_chart, use_container_width=True)
+        # Equity curve chart
+        fig = go.Figure()
 
-    with col2:
-        # Individual strategy contribution
-        st.subheader("Strategy Contribution")
-        contribution_data = []
-        for strategy in selected_strategies:
-            strat_df = portfolio_trades[portfolio_trades['Strategy'] == strategy]
-            contribution_data.append({
-                'Strategy': strategy,
-                'Trades': len(strat_df),
-                'P/L Contribution': strat_df['P/L'].sum(),
-                '% of Total': (len(strat_df) / len(portfolio_trades) * 100) if len(portfolio_trades) > 0 else 0,
-            })
+        fig.add_trace(go.Scatter(
+            x=simulated_portfolio['Date Closed'],
+            y=simulated_portfolio['Equity'],
+            mode='lines',
+            name='Portfolio Equity',
+            fill='tozeroy',
+            fillcolor='rgba(40, 167, 69, 0.3)' if simulated_portfolio['Equity'].iloc[-1] > simulated_portfolio['Equity'].iloc[0] else 'rgba(220, 53, 69, 0.3)',
+            line=dict(color=COLORS['positive'] if simulated_portfolio['Equity'].iloc[-1] > simulated_portfolio['Equity'].iloc[0] else COLORS['negative']),
+            hovertemplate='$%{y:,.2f}<extra></extra>',
+        ))
 
-        contribution_df = pd.DataFrame(contribution_data)
-        contribution_df['P/L Contribution'] = contribution_df['P/L Contribution'].apply(lambda x: f"${x:,.2f}")
-        contribution_df['% of Total'] = contribution_df['% of Total'].apply(lambda x: f"{x:.1f}%")
+        # Add starting capital line
+        start_capital = simulated_portfolio['Equity'].iloc[0] - simulated_portfolio['Scaled P/L'].iloc[0]
+        fig.add_hline(y=start_capital, line_dash="dash", line_color=COLORS['neutral'],
+                      annotation_text=f"Starting BP: ${start_capital:,.0f}")
 
-        st.dataframe(contribution_df, use_container_width=True, hide_index=True)
+        fig.update_layout(
+            title="Portfolio Equity Curve (Scaled by Allocation)",
+            xaxis_title="Date",
+            yaxis_title="Equity ($)",
+            height=500,
+            showlegend=False,
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Summary metrics for simulated portfolio
+        sim_col1, sim_col2, sim_col3, sim_col4 = st.columns(4)
+
+        with sim_col1:
+            total_pnl = simulated_portfolio['Scaled P/L'].sum()
+            st.metric("Total P/L (Scaled)", f"${total_pnl:,.2f}")
+
+        with sim_col2:
+            max_dd = simulated_portfolio['Drawdown'].min()
+            st.metric("Max Drawdown", f"${max_dd:,.2f}")
+
+        with sim_col3:
+            max_dd_pct = simulated_portfolio['Drawdown %'].min()
+            st.metric("Max Drawdown %", f"{max_dd_pct:.1f}%")
+
+        with sim_col4:
+            if bp_result['total_bp'] > 0:
+                roi = (total_pnl / bp_result['total_bp']) * 100
+                st.metric("Return on BP", f"{roi:.1f}%")
+            else:
+                st.metric("Return on BP", "N/A")
+
+        # Drawdown chart
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Custom drawdown chart for simulated portfolio
+            dd_fig = go.Figure()
+
+            dd_fig.add_trace(go.Scatter(
+                x=simulated_portfolio['Date Closed'],
+                y=simulated_portfolio['Drawdown'],
+                mode='lines',
+                fill='tozeroy',
+                fillcolor='rgba(220, 53, 69, 0.3)',
+                line=dict(color=COLORS['negative']),
+                name='Drawdown',
+                hovertemplate='$%{y:,.2f}<extra></extra>',
+            ))
+
+            dd_fig.update_layout(
+                title="Portfolio Drawdown (Scaled)",
+                xaxis_title="Date",
+                yaxis_title="Drawdown ($)",
+                height=300,
+                showlegend=False,
+            )
+
+            st.plotly_chart(dd_fig, use_container_width=True)
+
+        with col2:
+            # Individual strategy contribution (scaled)
+            st.subheader("Strategy Contribution (Scaled)")
+            contribution_data = []
+            for strategy in active_allocations.keys():
+                strat_df = simulated_portfolio[simulated_portfolio['Strategy'] == strategy]
+                allocation = active_allocations[strategy]
+                scaled_pnl = strat_df['P/L'].sum() * allocation
+
+                contribution_data.append({
+                    'Strategy': strategy,
+                    'Allocation': f"{allocation}x",
+                    'Trades': len(strat_df),
+                    'Scaled P/L': scaled_pnl,
+                })
+
+            contribution_df = pd.DataFrame(contribution_data)
+            contribution_df = contribution_df.sort_values('Scaled P/L', ascending=False)
+            contribution_df['Scaled P/L'] = contribution_df['Scaled P/L'].apply(lambda x: f"${x:,.2f}")
+
+            st.dataframe(contribution_df, use_container_width=True, hide_index=True)
 
 # Strategy Correlation Matrix
 st.subheader("Strategy Diversification")

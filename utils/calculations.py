@@ -743,6 +743,142 @@ def interpret_profitability_probability(probability, ev, trade_count):
         }
 
 
+def calculate_strategy_bp_requirements(df, strategy):
+    """
+    Calculate buying power requirements for a strategy.
+
+    Uses 'Margin Req.' column if available, otherwise estimates from Max Loss.
+
+    Returns: dict with:
+    - max_bp: maximum BP required for any single trade
+    - avg_bp: average BP per trade
+    - min_bp: minimum BP required
+    - median_bp: median BP required
+    - trade_count: number of trades analyzed
+    """
+    strategy_df = df[df['Strategy'] == strategy].copy()
+
+    if len(strategy_df) == 0:
+        return {
+            'max_bp': 0,
+            'avg_bp': 0,
+            'min_bp': 0,
+            'median_bp': 0,
+            'trade_count': 0,
+        }
+
+    # Use Margin Req. if available
+    if 'Margin Req.' in strategy_df.columns:
+        bp_values = strategy_df['Margin Req.'].dropna()
+        if len(bp_values) > 0:
+            return {
+                'max_bp': bp_values.max(),
+                'avg_bp': bp_values.mean(),
+                'min_bp': bp_values.min(),
+                'median_bp': bp_values.median(),
+                'trade_count': len(bp_values),
+            }
+
+    # Fallback: estimate from Max Loss if available (as percentage, need to convert)
+    # This is a rough estimate - actual BP depends on broker rules
+    if 'Max Loss' in strategy_df.columns and 'Premium' in strategy_df.columns:
+        # Estimate BP as |Max Loss %| * some notional value
+        # This is approximate - in reality would need strike prices
+        pass
+
+    return {
+        'max_bp': 0,
+        'avg_bp': 0,
+        'min_bp': 0,
+        'median_bp': 0,
+        'trade_count': 0,
+    }
+
+
+def calculate_portfolio_bp(df, strategy_allocations):
+    """
+    Calculate total buying power needed for a portfolio with specific trade allocations.
+
+    Args:
+        df: DataFrame with trade data
+        strategy_allocations: dict of {strategy: num_concurrent_trades}
+
+    Returns: dict with:
+    - total_bp: total BP needed (sum of max_bp * concurrent_trades for each strategy)
+    - strategy_bp: dict of {strategy: {max_bp, allocated_bp, concurrent_trades}}
+    """
+    strategy_bp = {}
+    total_bp = 0
+
+    for strategy, concurrent_trades in strategy_allocations.items():
+        bp_req = calculate_strategy_bp_requirements(df, strategy)
+
+        allocated_bp = bp_req['max_bp'] * concurrent_trades
+
+        strategy_bp[strategy] = {
+            'max_bp_per_trade': bp_req['max_bp'],
+            'avg_bp_per_trade': bp_req['avg_bp'],
+            'concurrent_trades': concurrent_trades,
+            'allocated_bp': allocated_bp,
+        }
+
+        total_bp += allocated_bp
+
+    return {
+        'total_bp': total_bp,
+        'strategy_bp': strategy_bp,
+    }
+
+
+def simulate_portfolio_with_allocation(df, strategy_allocations, start_capital=None):
+    """
+    Simulate portfolio equity curve with specific trade allocations per strategy.
+
+    This simulates running concurrent_trades positions for each strategy,
+    cycling through historical trades.
+
+    Args:
+        df: DataFrame with trade data
+        strategy_allocations: dict of {strategy: num_concurrent_trades}
+        start_capital: starting capital (defaults to total BP needed)
+
+    Returns: DataFrame with simulated equity curve
+    """
+    # Get all trades for selected strategies
+    strategies = list(strategy_allocations.keys())
+    portfolio_df = df[df['Strategy'].isin(strategies)].copy()
+    portfolio_df = portfolio_df.sort_values('Date Closed')
+
+    if len(portfolio_df) == 0:
+        return pd.DataFrame()
+
+    # Calculate BP needed
+    bp_result = calculate_portfolio_bp(df, strategy_allocations)
+    total_bp = bp_result['total_bp']
+
+    if start_capital is None:
+        start_capital = total_bp if total_bp > 0 else 10000
+
+    # Scale P/L based on trade allocation
+    # If we're running N concurrent trades of a strategy, we multiply P/L by N
+    scaled_pnl = []
+    for _, row in portfolio_df.iterrows():
+        strategy = row['Strategy']
+        multiplier = strategy_allocations.get(strategy, 1)
+        scaled_pnl.append(row['P/L'] * multiplier)
+
+    portfolio_df['Scaled P/L'] = scaled_pnl
+    portfolio_df['Cumulative P/L'] = portfolio_df['Scaled P/L'].cumsum()
+    portfolio_df['Equity'] = start_capital + portfolio_df['Cumulative P/L']
+
+    # Calculate drawdown
+    portfolio_df['Peak'] = portfolio_df['Equity'].expanding().max()
+    portfolio_df['Drawdown'] = portfolio_df['Equity'] - portfolio_df['Peak']
+    portfolio_df['Drawdown %'] = (portfolio_df['Drawdown'] / portfolio_df['Peak']) * 100
+
+    return portfolio_df
+
+
 def interpret_ev_reliability(cv, sensitivity_score, trade_count):
     """
     Generate a synthesized interpretation of EV reliability based on
