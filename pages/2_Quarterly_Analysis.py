@@ -14,6 +14,8 @@ from config import PAGE_CONFIG, QUARTERS, MIN_TRADES_FOR_STATS
 from utils.calculations import (
     calculate_expected_value,
     calculate_strategy_metrics,
+    calculate_trading_days,
+    calculate_profitability_probability,
 )
 from utils.visualizations import (
     create_ev_heatmap,
@@ -25,6 +27,70 @@ from utils.filters import (
     get_year_filter_options,
 )
 from utils.auth import check_authentication, render_user_info_sidebar
+
+
+def get_quarter_date_range(df, quarter, year=None):
+    """Get the date range for a quarter (or custom period) from the data."""
+    quarter_ranges = {
+        'Q1': (1, 1, 3, 31),
+        'Q2': (4, 1, 6, 30),
+        'Q3': (7, 1, 9, 30),
+        'Q4': (10, 1, 12, 31),
+    }
+
+    if quarter in quarter_ranges:
+        sm, sd, em, ed = quarter_ranges[quarter]
+        if year:
+            start_date = pd.Timestamp(year, sm, sd)
+            # Handle end of month correctly
+            if em == 2:
+                ed = 28  # Simplified - doesn't handle leap years
+            end_date = pd.Timestamp(year, em, ed)
+        else:
+            # Use the data's date range
+            years = df['Year'].unique()
+            start_date = pd.Timestamp(min(years), sm, sd)
+            end_date = pd.Timestamp(max(years), em, ed)
+        return start_date, end_date
+    return None, None
+
+
+def calculate_strategy_reliability_for_period(df, strategy, period_filter_func, period_start=None, period_end=None):
+    """
+    Calculate trade density and probability of profit for a strategy in a specific period.
+
+    Returns: dict with trade_count, trading_days, trade_density, probability_of_profit
+    """
+    strategy_df = df[df['Strategy'] == strategy].copy()
+    period_df = strategy_df[strategy_df['Date Opened'].apply(period_filter_func)]
+
+    if len(period_df) < MIN_TRADES_FOR_STATS:
+        return {
+            'trade_count': len(period_df),
+            'trading_days': 0,
+            'trade_density': 0,
+            'probability_of_profit': np.nan,
+        }
+
+    # Calculate trading days
+    if period_start is None:
+        period_start = period_df['Date Opened'].min()
+    if period_end is None:
+        period_end = period_df['Date Opened'].max()
+
+    trading_days = calculate_trading_days(period_start, period_end)
+    trade_density = (len(period_df) / trading_days * 100) if trading_days > 0 else 0
+
+    # Calculate probability of profit
+    prob_result = calculate_profitability_probability(period_df, simulations=1000)  # Fewer sims for speed
+    probability_of_profit = prob_result['probability'] if not np.isnan(prob_result['probability']) else 0
+
+    return {
+        'trade_count': len(period_df),
+        'trading_days': trading_days,
+        'trade_density': trade_density,
+        'probability_of_profit': probability_of_profit,
+    }
 
 st.set_page_config(
     page_title=f"Quarterly Analysis - {PAGE_CONFIG['page_title']}",
@@ -183,6 +249,137 @@ with st.expander("Heatmap Settings", expanded=True):
             horizontal=True,
             key="heatmap_sort_order",
         )
+
+    # Reliability-based filtering
+    st.markdown("---")
+    st.markdown("**Filter by Reliability Metrics**")
+    st.caption("Only show strategies that meet minimum thresholds for a selected period")
+
+    enable_reliability_filter = st.checkbox(
+        "Enable reliability filtering",
+        value=False,
+        key="enable_reliability_filter",
+    )
+
+    if enable_reliability_filter:
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
+
+        with filter_col1:
+            # Period to base the filter on
+            filter_period_options = QUARTERS.copy()
+            if enable_custom:
+                filter_period_options.append(custom_label)
+
+            filter_period = st.selectbox(
+                "Filter based on period",
+                options=filter_period_options,
+                index=0,
+                key="reliability_filter_period",
+                help="Strategies will be filtered based on their metrics in this period"
+            )
+
+        with filter_col2:
+            min_trade_density = st.slider(
+                "Min Trade Density (%)",
+                min_value=0,
+                max_value=100,
+                value=10,
+                step=5,
+                key="min_trade_density",
+                help="Minimum percentage of trading days with trades"
+            )
+
+        with filter_col3:
+            min_profit_prob = st.slider(
+                "Min Probability of Profit (%)",
+                min_value=0,
+                max_value=100,
+                value=50,
+                step=5,
+                key="min_profit_prob",
+                help="Minimum probability of being profitable"
+            )
+
+        # Calculate reliability metrics for all strategies and filter
+        st.markdown("**Calculating reliability metrics...**")
+
+        # Create period filter function
+        def create_period_filter(period, custom_sm=None, custom_sd=None, custom_em=None, custom_ed=None):
+            quarter_ranges = {
+                'Q1': (1, 1, 3, 31),
+                'Q2': (4, 1, 6, 30),
+                'Q3': (7, 1, 9, 30),
+                'Q4': (10, 1, 12, 31),
+            }
+
+            if period in quarter_ranges:
+                sm, sd, em, ed = quarter_ranges[period]
+            else:
+                # Custom period
+                sm, sd, em, ed = custom_sm, custom_sd, custom_em, custom_ed
+
+            def filter_func(date):
+                month, day = date.month, date.day
+                start = (sm, sd)
+                end = (em, ed)
+                if start <= end:
+                    return start <= (month, day) <= end
+                else:
+                    return (month, day) >= start or (month, day) <= end
+
+            return filter_func
+
+        if filter_period in QUARTERS:
+            period_filter = create_period_filter(filter_period)
+        else:
+            period_filter = create_period_filter(
+                filter_period,
+                custom_start_month, int(custom_start_day),
+                custom_end_month, int(custom_end_day)
+            )
+
+        # Calculate metrics for each strategy
+        reliability_data = []
+        strategies_meeting_threshold = []
+
+        for strategy in heatmap_strategies:
+            metrics = calculate_strategy_reliability_for_period(
+                year_filtered_df, strategy, period_filter
+            )
+
+            meets_density = metrics['trade_density'] >= min_trade_density
+            meets_prob = (not np.isnan(metrics['probability_of_profit']) and
+                         metrics['probability_of_profit'] * 100 >= min_profit_prob)
+
+            reliability_data.append({
+                'Strategy': strategy,
+                'Trades': metrics['trade_count'],
+                'Trading Days': metrics['trading_days'],
+                'Density': f"{metrics['trade_density']:.1f}%",
+                'Profit Prob': f"{metrics['probability_of_profit']*100:.0f}%" if not np.isnan(metrics['probability_of_profit']) else "N/A",
+                'Meets Criteria': '✓' if (meets_density and meets_prob) else '✗',
+            })
+
+            if meets_density and meets_prob:
+                strategies_meeting_threshold.append(strategy)
+
+        # Show reliability summary
+        with st.expander(f"Reliability Metrics for {filter_period}", expanded=False):
+            reliability_df = pd.DataFrame(reliability_data)
+            st.dataframe(reliability_df, use_container_width=True, hide_index=True)
+
+        # Update heatmap strategies based on filter
+        if strategies_meeting_threshold:
+            filtered_count = len(strategies_meeting_threshold)
+            total_count = len(heatmap_strategies)
+            st.success(f"**{filtered_count} of {total_count} strategies** meet the reliability thresholds for {filter_period}")
+            heatmap_strategies = strategies_meeting_threshold
+        else:
+            st.warning(f"No strategies meet both thresholds. Try lowering the minimums.")
+            # Keep original selection to avoid empty heatmap
+    else:
+        # Clear the message placeholder
+        pass
 
 if not heatmap_strategies:
     st.warning("Please select at least one strategy for the heatmap.")
