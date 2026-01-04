@@ -63,15 +63,39 @@ if len(filtered_df) == 0:
 # Scenario Selector
 st.header("Scenario Selection")
 
-col1, col2 = st.columns(2)
+# Month names for display
+MONTHS = {
+    1: 'January', 2: 'February', 3: 'March', 4: 'April',
+    5: 'May', 6: 'June', 7: 'July', 8: 'August',
+    9: 'September', 10: 'October', 11: 'November', 12: 'December'
+}
+
+col1, col2, col3 = st.columns(3)
 
 with col1:
-    target_quarter = st.selectbox(
-        "Target Quarter",
-        options=['All Quarters'] + QUARTERS,
+    period_type = st.radio(
+        "Period Type",
+        options=['Quarter', 'Month'],
+        horizontal=True,
+        help="Analyze by calendar quarter or specific month"
     )
 
 with col2:
+    if period_type == 'Quarter':
+        target_period = st.selectbox(
+            "Target Quarter",
+            options=['All Quarters'] + QUARTERS,
+            key="target_quarter_select"
+        )
+    else:
+        month_options = ['All Months'] + [MONTHS[i] for i in range(1, 13)]
+        target_period = st.selectbox(
+            "Target Month",
+            options=month_options,
+            key="target_month_select"
+        )
+
+with col3:
     year_options = ['All Time', 'Last 12 Months'] + [str(y) for y in sorted(filtered_df['Year'].unique(), reverse=True)]
     year_filter = st.selectbox(
         "Year Range",
@@ -81,8 +105,17 @@ with col2:
 # Apply scenario filters
 scenario_df = filtered_df.copy()
 
-if target_quarter != 'All Quarters':
-    scenario_df = scenario_df[scenario_df['Quarter'] == target_quarter]
+# Apply period filter (quarter or month)
+if period_type == 'Quarter':
+    if target_period != 'All Quarters':
+        scenario_df = scenario_df[scenario_df['Quarter'] == target_period]
+    period_label = target_period
+else:
+    if target_period != 'All Months':
+        # Get month number from name
+        month_num = [k for k, v in MONTHS.items() if v == target_period][0]
+        scenario_df = scenario_df[scenario_df['Month'] == month_num]
+    period_label = target_period
 
 if year_filter == 'Last 12 Months':
     cutoff = scenario_df['Date Opened'].max() - pd.Timedelta(days=365)
@@ -95,7 +128,7 @@ if len(scenario_df) == 0:
     st.stop()
 
 # Strategy Performance for Selected Scenario
-st.header(f"Strategy Performance: {target_quarter} ({year_filter})")
+st.header(f"Strategy Performance: {period_label} ({year_filter})")
 
 # Calculate metrics for scenario
 scenario_metrics = []
