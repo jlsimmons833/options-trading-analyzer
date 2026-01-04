@@ -262,20 +262,31 @@ with st.expander("Heatmap Settings", expanded=True):
     )
 
     if enable_reliability_filter:
-        filter_col1, filter_col2, filter_col3 = st.columns(3)
+        # Row 1: Period selection
+        filter_period_options = QUARTERS.copy()
+        if enable_custom:
+            filter_period_options.append(custom_label)
+
+        filter_period = st.selectbox(
+            "Filter based on period",
+            options=filter_period_options,
+            index=0,
+            key="reliability_filter_period",
+            help="Strategies will be filtered based on their metrics in this period"
+        )
+
+        # Row 2: Threshold sliders
+        filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
 
         with filter_col1:
-            # Period to base the filter on
-            filter_period_options = QUARTERS.copy()
-            if enable_custom:
-                filter_period_options.append(custom_label)
-
-            filter_period = st.selectbox(
-                "Filter based on period",
-                options=filter_period_options,
-                index=0,
-                key="reliability_filter_period",
-                help="Strategies will be filtered based on their metrics in this period"
+            min_trade_count = st.number_input(
+                "Min Trade Count",
+                min_value=0,
+                max_value=500,
+                value=10,
+                step=5,
+                key="min_trade_count",
+                help="Minimum number of trades in the period"
             )
 
         with filter_col2:
@@ -283,7 +294,7 @@ with st.expander("Heatmap Settings", expanded=True):
                 "Min Trade Density (%)",
                 min_value=0,
                 max_value=100,
-                value=10,
+                value=0,
                 step=5,
                 key="min_trade_density",
                 help="Minimum percentage of trading days with trades"
@@ -291,13 +302,24 @@ with st.expander("Heatmap Settings", expanded=True):
 
         with filter_col3:
             min_profit_prob = st.slider(
-                "Min Probability of Profit (%)",
+                "Min Profit Probability (%)",
                 min_value=0,
                 max_value=100,
                 value=50,
                 step=5,
                 key="min_profit_prob",
                 help="Minimum probability of being profitable"
+            )
+
+        with filter_col4:
+            min_ev = st.number_input(
+                "Min Expected Value ($)",
+                min_value=-100.0,
+                max_value=500.0,
+                value=0.0,
+                step=5.0,
+                key="min_ev_filter",
+                help="Minimum Expected Value in dollars"
             )
 
         # Calculate reliability metrics for all strategies and filter
@@ -347,39 +369,63 @@ with st.expander("Heatmap Settings", expanded=True):
                 year_filtered_df, strategy, period_filter
             )
 
+            # Calculate EV for this strategy in the period
+            strategy_df = year_filtered_df[year_filtered_df['Strategy'] == strategy]
+            period_strategy_df = strategy_df[strategy_df['Date Opened'].apply(period_filter)]
+            ev = calculate_expected_value(period_strategy_df) if len(period_strategy_df) >= MIN_TRADES_FOR_STATS else np.nan
+
+            # Check all thresholds
+            meets_trade_count = metrics['trade_count'] >= min_trade_count
             meets_density = metrics['trade_density'] >= min_trade_density
             meets_prob = (not np.isnan(metrics['probability_of_profit']) and
                          metrics['probability_of_profit'] * 100 >= min_profit_prob)
+            meets_ev = (not np.isnan(ev) and ev >= min_ev)
+
+            all_criteria_met = meets_trade_count and meets_density and meets_prob and meets_ev
 
             reliability_data.append({
                 'Strategy': strategy,
                 'Trades': metrics['trade_count'],
-                'Trading Days': metrics['trading_days'],
                 'Density': f"{metrics['trade_density']:.1f}%",
                 'Profit Prob': f"{metrics['probability_of_profit']*100:.0f}%" if not np.isnan(metrics['probability_of_profit']) else "N/A",
-                'Meets Criteria': '✓' if (meets_density and meets_prob) else '✗',
+                'EV': f"${ev:.2f}" if not np.isnan(ev) else "N/A",
+                'Meets Criteria': '✓' if all_criteria_met else '✗',
             })
 
-            if meets_density and meets_prob:
+            if all_criteria_met:
                 strategies_meeting_threshold.append(strategy)
 
         # Show reliability summary
         with st.expander(f"Reliability Metrics for {filter_period}", expanded=False):
             reliability_df = pd.DataFrame(reliability_data)
+            # Sort by whether criteria is met, then by EV
             st.dataframe(reliability_df, use_container_width=True, hide_index=True)
+
+            st.caption(f"Thresholds: Trades ≥ {min_trade_count}, Density ≥ {min_trade_density}%, Profit Prob ≥ {min_profit_prob}%, EV ≥ ${min_ev:.2f}")
 
         # Update heatmap strategies based on filter
         if strategies_meeting_threshold:
             filtered_count = len(strategies_meeting_threshold)
             total_count = len(heatmap_strategies)
-            st.success(f"**{filtered_count} of {total_count} strategies** meet the reliability thresholds for {filter_period}")
+            st.success(f"**{filtered_count} of {total_count} strategies** meet all reliability thresholds for {filter_period}")
             heatmap_strategies = strategies_meeting_threshold
+
+            # Store filtered strategies in session state for Portfolio Builder
+            st.session_state.filtered_strategies_from_quarterly = strategies_meeting_threshold
+            st.session_state.filtered_strategies_period = filter_period
+            st.session_state.filtered_strategies_year = selected_year
+
+            # Option to use in Portfolio Builder
+            st.info("💡 These filtered strategies are now available as a starting point in the **Portfolio Builder** page.")
         else:
-            st.warning(f"No strategies meet both thresholds. Try lowering the minimums.")
-            # Keep original selection to avoid empty heatmap
+            st.warning(f"No strategies meet all thresholds. Try lowering the minimums.")
+            # Clear the session state if no strategies meet criteria
+            if 'filtered_strategies_from_quarterly' in st.session_state:
+                del st.session_state.filtered_strategies_from_quarterly
     else:
-        # Clear the message placeholder
-        pass
+        # Clear the filtered strategies from session state when filter is disabled
+        if 'filtered_strategies_from_quarterly' in st.session_state:
+            del st.session_state.filtered_strategies_from_quarterly
 
 if not heatmap_strategies:
     st.warning("Please select at least one strategy for the heatmap.")

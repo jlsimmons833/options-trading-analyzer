@@ -134,13 +134,49 @@ st.dataframe(
 # Strategy Selection Interface
 st.header("Build Your Portfolio")
 
-# Get top 5 by EV as default
-top_5 = scenario_metrics_df.head(5)['Strategy'].tolist()
+# Check if there are filtered strategies from Quarterly Analysis
+has_quarterly_filter = 'filtered_strategies_from_quarterly' in st.session_state
+
+if has_quarterly_filter:
+    filtered_from_quarterly = st.session_state.filtered_strategies_from_quarterly
+    filter_period = st.session_state.get('filtered_strategies_period', 'Unknown')
+    filter_year = st.session_state.get('filtered_strategies_year', 'All Years')
+
+    # Only include strategies that exist in current scenario
+    available_filtered = [s for s in filtered_from_quarterly if s in scenario_df['Strategy'].unique()]
+
+    if available_filtered:
+        st.info(f"💡 **{len(available_filtered)} strategies** from Quarterly Analysis reliability filter ({filter_period}, {filter_year}) are available.")
+
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            use_quarterly_filter = st.button(
+                "Use Filtered Strategies",
+                key="use_quarterly_strategies",
+                help="Start with strategies that passed the reliability filter in Quarterly Analysis"
+            )
+
+        if use_quarterly_filter:
+            st.session_state.portfolio_strategies_override = available_filtered
+
+# Determine default strategies
+if 'portfolio_strategies_override' in st.session_state:
+    default_strategies = st.session_state.portfolio_strategies_override
+    # Clear the override after using it
+    del st.session_state.portfolio_strategies_override
+elif has_quarterly_filter:
+    # If quarterly filter exists but user hasn't clicked button, still use top 5 by EV
+    top_5 = scenario_metrics_df.head(5)['Strategy'].tolist()
+    default_strategies = top_5
+else:
+    # Get top 5 by EV as default
+    top_5 = scenario_metrics_df.head(5)['Strategy'].tolist()
+    default_strategies = top_5
 
 selected_strategies = st.multiselect(
     "Select strategies to include in portfolio",
     options=sorted(scenario_df['Strategy'].unique()),
-    default=top_5,
+    default=default_strategies,
 )
 
 if not selected_strategies:
