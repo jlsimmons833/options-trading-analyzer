@@ -162,25 +162,36 @@ if has_quarterly_filter:
         if use_quarterly_filter:
             st.session_state.portfolio_strategies_override = available_filtered
 
-# Determine default strategies
+# Initialize selected strategies in session state if not present
+if 'selected_portfolio_strategies' not in st.session_state:
+    # Default to top 5 by EV on first load
+    top_5 = scenario_metrics_df.head(5)['Strategy'].tolist()
+    st.session_state.selected_portfolio_strategies = top_5
+
+# Handle override from "Use Filtered Strategies" button
 if 'portfolio_strategies_override' in st.session_state:
-    default_strategies = st.session_state.portfolio_strategies_override
-    # Clear the override after using it
+    st.session_state.selected_portfolio_strategies = st.session_state.portfolio_strategies_override
     del st.session_state.portfolio_strategies_override
-elif has_quarterly_filter:
-    # If quarterly filter exists but user hasn't clicked button, still use top 5 by EV
-    top_5 = scenario_metrics_df.head(5)['Strategy'].tolist()
-    default_strategies = top_5
-else:
-    # Get top 5 by EV as default
-    top_5 = scenario_metrics_df.head(5)['Strategy'].tolist()
-    default_strategies = top_5
+    st.rerun()
+
+# Get available options for current scenario
+available_options = sorted(scenario_df['Strategy'].unique())
+
+# Filter selected strategies to only include those available in current scenario
+current_selection = [s for s in st.session_state.selected_portfolio_strategies if s in available_options]
+if current_selection != st.session_state.selected_portfolio_strategies:
+    st.session_state.selected_portfolio_strategies = current_selection
 
 selected_strategies = st.multiselect(
     "Select strategies to include in portfolio",
-    options=sorted(scenario_df['Strategy'].unique()),
-    default=default_strategies,
+    options=available_options,
+    default=st.session_state.selected_portfolio_strategies,
+    key="portfolio_multiselect",
 )
+
+# Update session state when selection changes
+if selected_strategies != st.session_state.selected_portfolio_strategies:
+    st.session_state.selected_portfolio_strategies = selected_strategies
 
 if not selected_strategies:
     st.info("Please select at least one strategy to build a portfolio.")
