@@ -196,19 +196,18 @@ Configure how many concurrent trades to run for each strategy. This affects:
 - **Drawdown** analysis
 """)
 
-# Initialize allocations in session state if not present
-if 'trade_allocations' not in st.session_state:
-    st.session_state.trade_allocations = {}
-
-# Build the allocation interface
-allocation_data = []
-trade_allocations = {}
-
 # Check if Margin Req. column exists
 has_margin_data = 'Margin Req.' in scenario_df.columns
 
 if not has_margin_data:
     st.warning("⚠️ 'Margin Req.' column not found in data. BP estimates will not be available.")
+
+# Initialize allocation values in session state BEFORE creating widgets
+# This avoids the "default value vs session state" conflict
+for strategy in selected_strategies:
+    alloc_key = f"alloc_{strategy}"
+    if alloc_key not in st.session_state:
+        st.session_state[alloc_key] = 1
 
 col1, col2 = st.columns([3, 1])
 
@@ -230,38 +229,47 @@ with col2:
 with col1:
     st.markdown("**Set trades per strategy:**")
 
+# Build the allocation interface
+allocation_data = []
+trade_allocations = {}
+
 # Create allocation inputs for each strategy
-alloc_cols = st.columns(min(len(selected_strategies), 4))
+# Use rows of 4 columns
+num_strategies = len(selected_strategies)
+strategies_per_row = 4
 
-for i, strategy in enumerate(selected_strategies):
-    col_idx = i % 4
-    with alloc_cols[col_idx]:
-        # Get BP requirements for this strategy
-        bp_req = calculate_strategy_bp_requirements(scenario_df, strategy)
+for row_start in range(0, num_strategies, strategies_per_row):
+    row_strategies = selected_strategies[row_start:row_start + strategies_per_row]
+    alloc_cols = st.columns(len(row_strategies))
 
-        # Get current allocation from session state or default to 1
-        default_alloc = st.session_state.get(f"alloc_{strategy}", 1)
+    for col_idx, strategy in enumerate(row_strategies):
+        with alloc_cols[col_idx]:
+            # Get BP requirements for this strategy
+            bp_req = calculate_strategy_bp_requirements(scenario_df, strategy)
 
-        allocation = st.number_input(
-            f"{strategy[:20]}..." if len(strategy) > 20 else strategy,
-            min_value=0,
-            max_value=10,
-            value=default_alloc,
-            step=1,
-            key=f"alloc_{strategy}",
-            help=f"Max BP/trade: ${bp_req['max_bp']:,.0f}" if bp_req['max_bp'] > 0 else "BP data not available"
-        )
+            # Truncate long strategy names for display
+            display_name = f"{strategy[:25]}..." if len(strategy) > 25 else strategy
 
-        trade_allocations[strategy] = allocation
+            # Create the number input - value comes from session state (initialized above)
+            allocation = st.number_input(
+                display_name,
+                min_value=0,
+                max_value=10,
+                step=1,
+                key=f"alloc_{strategy}",
+                help=f"Max BP/trade: ${bp_req['max_bp']:,.0f}" if bp_req['max_bp'] > 0 else "BP data not available"
+            )
 
-        # Store allocation data for display
-        allocation_data.append({
-            'Strategy': strategy,
-            'Trades Allocated': allocation,
-            'Max BP/Trade': bp_req['max_bp'],
-            'Avg BP/Trade': bp_req['avg_bp'],
-            'Total BP': bp_req['max_bp'] * allocation,
-        })
+            trade_allocations[strategy] = allocation
+
+            # Store allocation data for display
+            allocation_data.append({
+                'Strategy': strategy,
+                'Trades Allocated': allocation,
+                'Max BP/Trade': bp_req['max_bp'],
+                'Avg BP/Trade': bp_req['avg_bp'],
+                'Total BP': bp_req['max_bp'] * allocation,
+            })
 
 # Calculate total portfolio BP
 bp_result = calculate_portfolio_bp(scenario_df, trade_allocations)
