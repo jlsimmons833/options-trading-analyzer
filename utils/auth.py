@@ -8,7 +8,8 @@ import tempfile
 import os
 
 # Set to True to enable authentication, False to disable
-AUTH_ENABLED = True
+# Using Streamlit Cloud's built-in auth instead
+AUTH_ENABLED = False
 
 # Access control mode:
 # - "open": Any Google account can log in
