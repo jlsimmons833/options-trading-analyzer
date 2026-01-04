@@ -13,8 +13,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import PAGE_CONFIG, MIN_TRADES_FOR_STATS, QUARTERS
 from utils.data_processing import load_and_process_data, detect_file_format
-from utils.calculations import calculate_expected_value, calculate_strategy_metrics
-from utils.visualizations import create_ev_bar_chart, create_pie_chart, create_ev_heatmap
+from utils.calculations import (
+    calculate_expected_value,
+    calculate_strategy_metrics,
+    calculate_ev_reliability_metrics,
+    calculate_ev_sensitivity,
+)
+from utils.visualizations import (
+    create_ev_bar_chart,
+    create_pie_chart,
+    create_ev_heatmap,
+    create_cv_gauge,
+    create_pnl_distribution,
+    create_pnl_box_plot,
+    create_sensitivity_chart,
+)
 from utils.filters import initialize_session_state, render_sidebar_filters, apply_filters
 from utils.auth import check_authentication, render_user_info_sidebar
 
@@ -126,6 +139,193 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
 )
+
+# Strategy Deep Dive Section
+st.header("Strategy Deep Dive")
+
+st.markdown("""
+Select strategies to analyze EV reliability. This helps you understand how much to trust the Expected Value calculation.
+""")
+
+# Strategy selector for deep dive
+all_strategies = sorted(filtered_df['Strategy'].unique())
+deep_dive_strategies = st.multiselect(
+    "Select strategies to analyze (1-5 recommended)",
+    options=all_strategies,
+    default=[],
+    max_selections=5,
+    key="deep_dive_strategies",
+)
+
+if deep_dive_strategies:
+    # Time period filter for the deep dive
+    st.markdown("---")
+    period_col1, period_col2 = st.columns(2)
+
+    with period_col1:
+        dd_period_type = st.selectbox(
+            "Analysis Period",
+            options=['All Data', 'Standard Quarter', 'Custom Date Range'],
+            key="dd_period_type",
+        )
+
+    with period_col2:
+        if dd_period_type == 'Standard Quarter':
+            dd_quarter = st.selectbox(
+                "Select Quarter",
+                options=QUARTERS,
+                key="dd_quarter",
+            )
+        elif dd_period_type == 'Custom Date Range':
+            dd_date_range = st.date_input(
+                "Date Range",
+                value=(filtered_df['Date Opened'].min().date(), filtered_df['Date Opened'].max().date()),
+                key="dd_date_range",
+            )
+
+    # CV Legend
+    with st.expander("Understanding Coefficient of Variation (CV)", expanded=False):
+        st.markdown("""
+        **CV measures how spread out the P/L values are relative to the average.**
+
+        | CV Range | Label | What it Means |
+        |----------|-------|---------------|
+        | < 0.5 | **Consistent** | Results cluster tightly around EV - high confidence |
+        | 0.5 - 1.0 | **Moderate** | Some spread, but EV is still a reasonable estimate |
+        | 1.0 - 2.0 | **Variable** | Wide spread - use EV as a rough guide only |
+        | > 2.0 | **Highly Variable** | Very unpredictable - treat EV with caution |
+
+        *Lower CV = More reliable EV*
+        """)
+
+    st.markdown("---")
+
+    # Analyze each selected strategy
+    for strategy in deep_dive_strategies:
+        st.subheader(f"{strategy}")
+
+        # Filter data for this strategy
+        strategy_df = filtered_df[filtered_df['Strategy'] == strategy].copy()
+
+        # Apply time period filter
+        if dd_period_type == 'Standard Quarter':
+            strategy_df = strategy_df[strategy_df['Quarter'] == dd_quarter]
+            period_start = strategy_df['Date Opened'].min() if len(strategy_df) > 0 else None
+            period_end = strategy_df['Date Opened'].max() if len(strategy_df) > 0 else None
+        elif dd_period_type == 'Custom Date Range' and len(dd_date_range) == 2:
+            strategy_df = strategy_df[
+                (strategy_df['Date Opened'].dt.date >= dd_date_range[0]) &
+                (strategy_df['Date Opened'].dt.date <= dd_date_range[1])
+            ]
+            period_start = pd.Timestamp(dd_date_range[0])
+            period_end = pd.Timestamp(dd_date_range[1])
+        else:
+            period_start = strategy_df['Date Opened'].min() if len(strategy_df) > 0 else None
+            period_end = strategy_df['Date Opened'].max() if len(strategy_df) > 0 else None
+
+        if len(strategy_df) < MIN_TRADES_FOR_STATS:
+            st.warning(f"Insufficient trades ({len(strategy_df)}) for reliable analysis. Need at least {MIN_TRADES_FOR_STATS}.")
+            st.markdown("---")
+            continue
+
+        # Calculate reliability metrics
+        reliability = calculate_ev_reliability_metrics(strategy_df, period_start, period_end)
+        sensitivity = calculate_ev_sensitivity(strategy_df)
+
+        # Row 1: Key metrics
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+
+        with metric_col1:
+            # Trade count with density
+            trade_text = f"{reliability['trade_count']} of {reliability['trading_days']} days"
+            density_pct = reliability['trade_density']
+            st.metric(
+                "Trade Coverage",
+                trade_text,
+                delta=f"{density_pct:.0f}% density",
+                delta_color="off",
+            )
+
+        with metric_col2:
+            # EV with confidence interval
+            ev, margin, lower, upper = reliability['confidence_interval']
+            if not pd.isna(margin):
+                st.metric(
+                    "Expected Value",
+                    f"${ev:.2f}",
+                    delta=f"± ${margin:.2f}",
+                    delta_color="off",
+                )
+                st.caption(f"95% CI: ${lower:.2f} to ${upper:.2f}")
+            else:
+                st.metric("Expected Value", f"${ev:.2f}")
+
+        with metric_col3:
+            # Standard deviation
+            std = reliability['std_dev']
+            if not pd.isna(std):
+                st.metric("Std Deviation", f"${std:.2f}")
+            else:
+                st.metric("Std Deviation", "N/A")
+
+        with metric_col4:
+            # Reliability indicator
+            if reliability['is_reliable']:
+                st.metric("Reliability", "Good", delta="Sufficient data", delta_color="normal")
+            else:
+                st.metric("Reliability", "Caution", delta="Limited data", delta_color="inverse")
+
+        # Row 2: CV gauge and interpretation + P/L distribution
+        viz_col1, viz_col2 = st.columns([1, 2])
+
+        with viz_col1:
+            # CV Gauge
+            cv_gauge = create_cv_gauge(reliability['cv'], title="Variability (CV)")
+            st.plotly_chart(cv_gauge, use_container_width=True)
+
+            # CV interpretation
+            label, color, description = reliability['cv_interpretation']
+            st.markdown(f"**{label}**: {description}")
+
+        with viz_col2:
+            # P/L Distribution with EV and CI
+            dist_chart = create_pnl_distribution(strategy_df, title="P/L Distribution")
+            st.plotly_chart(dist_chart, use_container_width=True)
+
+        # Row 3: Sensitivity analysis (collapsible)
+        with st.expander("EV Sensitivity Analysis", expanded=False):
+            if not pd.isna(sensitivity[0]):
+                base_ev, ev_wo_best, ev_wo_worst, sensitivity_score = sensitivity
+
+                sens_col1, sens_col2 = st.columns([2, 1])
+
+                with sens_col1:
+                    sens_chart = create_sensitivity_chart(base_ev, ev_wo_best, ev_wo_worst)
+                    st.plotly_chart(sens_chart, use_container_width=True)
+
+                with sens_col2:
+                    st.metric(
+                        "Sensitivity Score",
+                        f"{sensitivity_score:.1f}%",
+                        help="Average % change in EV when removing best/worst trade"
+                    )
+
+                    if sensitivity_score < 10:
+                        st.success("Low sensitivity - EV is stable")
+                    elif sensitivity_score < 25:
+                        st.info("Moderate sensitivity")
+                    else:
+                        st.warning("High sensitivity - outliers heavily influence EV")
+
+                    st.caption(f"EV without best: ${ev_wo_best:.2f}")
+                    st.caption(f"EV without worst: ${ev_wo_worst:.2f}")
+            else:
+                st.info("Not enough trades for sensitivity analysis.")
+
+        st.markdown("---")
+
+else:
+    st.info("Select one or more strategies above to see detailed reliability analysis.")
 
 # Quick visualizations
 st.header("Visualizations")

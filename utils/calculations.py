@@ -348,3 +348,171 @@ def get_best_strategies_by_quarter(df, top_n=3):
         recommendations[quarter] = strategy_evs[:top_n]
 
     return recommendations
+
+
+def calculate_trading_days(start_date, end_date):
+    """
+    Calculate the number of trading days between two dates.
+    Uses pandas business day calendar (excludes weekends).
+    """
+    if pd.isna(start_date) or pd.isna(end_date):
+        return 0
+    return len(pd.bdate_range(start=start_date, end=end_date))
+
+
+def calculate_ev_confidence_interval(trades_df, confidence=0.95):
+    """
+    Calculate confidence interval for Expected Value using bootstrap-like approach.
+    Uses standard error of the mean P/L as approximation.
+
+    Returns: (ev, margin_of_error, lower_bound, upper_bound)
+    """
+    from scipy import stats
+
+    if len(trades_df) < MIN_TRADES_FOR_STATS:
+        return (0, np.nan, np.nan, np.nan)
+
+    ev = calculate_expected_value(trades_df)
+    pnl = trades_df['P/L'].values
+
+    # Standard error of the mean
+    std_error = stats.sem(pnl)
+
+    # t-critical value for confidence level
+    t_critical = stats.t.ppf((1 + confidence) / 2, len(pnl) - 1)
+
+    margin_of_error = t_critical * std_error
+
+    return (ev, margin_of_error, ev - margin_of_error, ev + margin_of_error)
+
+
+def calculate_coefficient_of_variation(trades_df):
+    """
+    Calculate Coefficient of Variation (CV) for P/L.
+    CV = Standard Deviation / |Mean|
+
+    Returns CV as a positive number (or nan if mean is 0).
+    """
+    if len(trades_df) < MIN_TRADES_FOR_STATS:
+        return np.nan
+
+    pnl = trades_df['P/L']
+    mean_pnl = pnl.mean()
+    std_pnl = pnl.std()
+
+    if mean_pnl == 0:
+        return np.nan
+
+    return abs(std_pnl / mean_pnl)
+
+
+def interpret_cv(cv):
+    """
+    Interpret Coefficient of Variation for trading context.
+
+    Returns: (label, color, description)
+    """
+    if pd.isna(cv):
+        return ('Unknown', 'gray', 'Insufficient data')
+
+    if cv < 0.5:
+        return ('Consistent', 'green', 'EV is reliable - outcomes cluster tightly')
+    elif cv < 1.0:
+        return ('Moderate', 'blue', 'Some variability - EV is reasonable estimate')
+    elif cv < 2.0:
+        return ('Variable', 'orange', 'Wide spread - EV is a rough guide')
+    else:
+        return ('Highly Variable', 'red', 'Very unpredictable - treat EV with caution')
+
+
+def calculate_ev_reliability_metrics(trades_df, start_date=None, end_date=None):
+    """
+    Calculate comprehensive EV reliability metrics for a set of trades.
+
+    Returns dict with:
+    - trade_count: number of trades
+    - trading_days: available trading days in period
+    - trade_density: trades as % of trading days
+    - ev: expected value
+    - std_dev: standard deviation of P/L
+    - cv: coefficient of variation
+    - cv_interpretation: (label, color, description)
+    - confidence_interval: (ev, margin, lower, upper)
+    - is_reliable: boolean indicating if sample is statistically reliable
+    """
+    n_trades = len(trades_df)
+
+    # Determine date range
+    if start_date is None and len(trades_df) > 0:
+        start_date = trades_df['Date Opened'].min()
+    if end_date is None and len(trades_df) > 0:
+        end_date = trades_df['Date Opened'].max()
+
+    trading_days = calculate_trading_days(start_date, end_date) if start_date and end_date else 0
+
+    # Trade density (% of trading days with trades)
+    trade_density = (n_trades / trading_days * 100) if trading_days > 0 else 0
+
+    if n_trades < MIN_TRADES_FOR_STATS:
+        return {
+            'trade_count': n_trades,
+            'trading_days': trading_days,
+            'trade_density': trade_density,
+            'ev': 0,
+            'std_dev': np.nan,
+            'cv': np.nan,
+            'cv_interpretation': interpret_cv(np.nan),
+            'confidence_interval': (0, np.nan, np.nan, np.nan),
+            'is_reliable': False,
+        }
+
+    ev = calculate_expected_value(trades_df)
+    std_dev = trades_df['P/L'].std()
+    cv = calculate_coefficient_of_variation(trades_df)
+    confidence_interval = calculate_ev_confidence_interval(trades_df)
+
+    # Reliability check: sufficient trades AND reasonable CV
+    is_reliable = n_trades >= 30 and (pd.isna(cv) or cv < 2.0)
+
+    return {
+        'trade_count': n_trades,
+        'trading_days': trading_days,
+        'trade_density': trade_density,
+        'ev': ev,
+        'std_dev': std_dev,
+        'cv': cv,
+        'cv_interpretation': interpret_cv(cv),
+        'confidence_interval': confidence_interval,
+        'is_reliable': is_reliable,
+    }
+
+
+def calculate_ev_sensitivity(trades_df, exclude_n=1):
+    """
+    Calculate how sensitive EV is to outliers by removing best/worst trades.
+
+    Returns: (base_ev, ev_without_best, ev_without_worst, sensitivity_score)
+    """
+    if len(trades_df) < MIN_TRADES_FOR_STATS + (2 * exclude_n):
+        return (np.nan, np.nan, np.nan, np.nan)
+
+    base_ev = calculate_expected_value(trades_df)
+
+    # Sort by P/L
+    sorted_pnl = trades_df.sort_values('P/L')
+
+    # Remove worst N trades
+    without_worst = sorted_pnl.iloc[exclude_n:]
+    ev_without_worst = calculate_expected_value(without_worst)
+
+    # Remove best N trades
+    without_best = sorted_pnl.iloc[:-exclude_n]
+    ev_without_best = calculate_expected_value(without_best)
+
+    # Sensitivity score: average absolute change
+    if base_ev != 0:
+        sensitivity = (abs(ev_without_best - base_ev) + abs(ev_without_worst - base_ev)) / (2 * abs(base_ev)) * 100
+    else:
+        sensitivity = 0
+
+    return (base_ev, ev_without_best, ev_without_worst, sensitivity)

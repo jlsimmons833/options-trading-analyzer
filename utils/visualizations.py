@@ -413,3 +413,172 @@ def create_win_loss_chart(df, title="Win/Loss Distribution"):
     )
 
     return fig
+
+
+def create_cv_gauge(cv_value, title="Coefficient of Variation"):
+    """
+    Create a gauge chart showing CV with color zones.
+    """
+    # Define the zones
+    if pd.isna(cv_value):
+        cv_value = 0
+        gauge_color = "gray"
+    elif cv_value < 0.5:
+        gauge_color = COLORS['positive']
+    elif cv_value < 1.0:
+        gauge_color = COLORS['highlight']
+    elif cv_value < 2.0:
+        gauge_color = "orange"
+    else:
+        gauge_color = COLORS['negative']
+
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=cv_value,
+        number={'suffix': '', 'valueformat': '.2f'},
+        title={'text': title, 'font': {'size': 14}},
+        gauge={
+            'axis': {'range': [0, 3], 'tickwidth': 1, 'tickcolor': "darkgray"},
+            'bar': {'color': gauge_color, 'thickness': 0.75},
+            'bgcolor': "white",
+            'borderwidth': 2,
+            'bordercolor': "gray",
+            'steps': [
+                {'range': [0, 0.5], 'color': 'rgba(40, 167, 69, 0.3)'},
+                {'range': [0.5, 1.0], 'color': 'rgba(0, 123, 255, 0.3)'},
+                {'range': [1.0, 2.0], 'color': 'rgba(255, 165, 0, 0.3)'},
+                {'range': [2.0, 3.0], 'color': 'rgba(220, 53, 69, 0.3)'},
+            ],
+            'threshold': {
+                'line': {'color': "black", 'width': 2},
+                'thickness': 0.75,
+                'value': cv_value
+            }
+        }
+    ))
+
+    fig.update_layout(
+        height=200,
+        margin=dict(l=20, r=20, t=40, b=20),
+    )
+
+    return fig
+
+
+def create_pnl_distribution(df, title="P/L Distribution", show_ev=True, show_ci=True):
+    """
+    Create a detailed P/L distribution chart with EV and confidence interval markers.
+    """
+    from .calculations import calculate_expected_value, calculate_ev_confidence_interval
+
+    pnl = df['P/L']
+    ev = calculate_expected_value(df)
+    _, margin, lower, upper = calculate_ev_confidence_interval(df)
+
+    fig = go.Figure()
+
+    # Histogram colored by win/loss
+    fig.add_trace(go.Histogram(
+        x=pnl,
+        marker_color=[COLORS['positive'] if p > 0 else COLORS['negative'] for p in pnl],
+        opacity=0.7,
+        name='P/L',
+        nbinsx=30,
+    ))
+
+    # Add EV line
+    if show_ev:
+        fig.add_vline(
+            x=ev,
+            line_dash="solid",
+            line_color="black",
+            line_width=2,
+            annotation_text=f"EV: ${ev:.2f}",
+            annotation_position="top",
+        )
+
+    # Add confidence interval
+    if show_ci and not pd.isna(margin):
+        fig.add_vrect(
+            x0=lower,
+            x1=upper,
+            fillcolor="rgba(0, 0, 0, 0.1)",
+            line_width=0,
+            annotation_text="95% CI",
+            annotation_position="top left",
+        )
+
+    # Add zero line
+    fig.add_vline(x=0, line_dash="dash", line_color=COLORS['neutral'], line_width=1)
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="P/L ($)",
+        yaxis_title="Count",
+        height=300,
+        showlegend=False,
+    )
+
+    return fig
+
+
+def create_pnl_box_plot(df, title="P/L Box Plot"):
+    """
+    Create a box plot showing P/L distribution with quartiles and outliers.
+    """
+    fig = go.Figure()
+
+    pnl = df['P/L']
+
+    fig.add_trace(go.Box(
+        y=pnl,
+        name='P/L',
+        boxpoints='outliers',
+        marker_color=COLORS['highlight'],
+        line_color=COLORS['highlight'],
+    ))
+
+    # Color the box based on median
+    median_color = COLORS['positive'] if pnl.median() > 0 else COLORS['negative']
+
+    fig.update_layout(
+        title=title,
+        yaxis_title="P/L ($)",
+        height=300,
+        showlegend=False,
+    )
+
+    # Add zero line
+    fig.add_hline(y=0, line_dash="dash", line_color=COLORS['neutral'], line_width=1)
+
+    return fig
+
+
+def create_sensitivity_chart(base_ev, ev_without_best, ev_without_worst, title="EV Sensitivity"):
+    """
+    Create a chart showing EV sensitivity to outliers.
+    """
+    fig = go.Figure()
+
+    categories = ['Without Best Trade', 'Base EV', 'Without Worst Trade']
+    values = [ev_without_best, base_ev, ev_without_worst]
+    colors = [COLORS['negative'], COLORS['highlight'], COLORS['positive']]
+
+    fig.add_trace(go.Bar(
+        x=categories,
+        y=values,
+        marker_color=colors,
+        text=[f"${v:.2f}" for v in values],
+        textposition='outside',
+    ))
+
+    fig.add_hline(y=0, line_dash="dash", line_color=COLORS['neutral'])
+
+    fig.update_layout(
+        title=title,
+        yaxis_title="Expected Value ($)",
+        height=250,
+        showlegend=False,
+    )
+
+    return fig
