@@ -19,6 +19,10 @@ from utils.calculations import (
     calculate_ev_reliability_metrics,
     calculate_ev_sensitivity,
     interpret_ev_reliability,
+    calculate_profitability_probability,
+    calculate_probability_curve,
+    calculate_trades_for_confidence,
+    interpret_profitability_probability,
 )
 from utils.visualizations import (
     create_ev_bar_chart,
@@ -28,6 +32,8 @@ from utils.visualizations import (
     create_pnl_distribution,
     create_pnl_box_plot,
     create_sensitivity_chart,
+    create_probability_curve,
+    create_outcome_range_chart,
 )
 from utils.filters import initialize_session_state, render_sidebar_filters, apply_filters
 from utils.auth import check_authentication, render_user_info_sidebar
@@ -377,6 +383,112 @@ if deep_dive_strategies:
                     st.caption(f"EV without worst: ${ev_wo_worst:.2f}")
             else:
                 st.info("Not enough trades for sensitivity analysis.")
+
+        # Row 4: Profitability Probability Analysis
+        with st.expander("Profitability Probability", expanded=True):
+            # Calculate profitability metrics
+            prob_result = calculate_profitability_probability(strategy_df)
+
+            if not pd.isna(prob_result['probability']):
+                # Interpretation
+                prob_interp = interpret_profitability_probability(
+                    prob_result['probability'],
+                    reliability['ev'],
+                    reliability['trade_count']
+                )
+
+                # Header with probability
+                prob_colors = {
+                    'green': ('rgba(40, 167, 69, 0.15)', '#28a745'),
+                    'blue': ('rgba(0, 123, 255, 0.15)', '#007bff'),
+                    'orange': ('rgba(255, 165, 0, 0.15)', '#fd7e14'),
+                    'red': ('rgba(220, 53, 69, 0.15)', '#dc3545'),
+                    'gray': ('rgba(128, 128, 128, 0.15)', '#6c757d'),
+                }
+                prob_bg, prob_border = prob_colors.get(prob_interp['color'], prob_colors['gray'])
+
+                st.markdown(f"""
+                <div style="
+                    background-color: {prob_bg};
+                    border-left: 4px solid {prob_border};
+                    padding: 12px 16px;
+                    border-radius: 5px;
+                    margin-bottom: 15px;
+                ">
+                    <div style="font-size: 1.2em; font-weight: bold;">
+                        {prob_interp['icon']} {prob_interp['verdict']}
+                    </div>
+                    <div style="font-size: 0.95em;">
+                        {prob_interp['summary']}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Metrics row
+                prob_col1, prob_col2, prob_col3 = st.columns(3)
+
+                with prob_col1:
+                    st.metric(
+                        "Probability of Profit",
+                        f"{prob_result['probability']*100:.0f}%",
+                        help=f"Based on {reliability['trade_count']} historical trades"
+                    )
+
+                with prob_col2:
+                    st.metric(
+                        "Expected Total P/L",
+                        f"${prob_result['expected_pnl']:,.0f}",
+                        help="Average outcome from simulations"
+                    )
+
+                with prob_col3:
+                    # Trades needed for 80% confidence
+                    trades_for_80 = calculate_trades_for_confidence(strategy_df, target_probability=0.80)
+                    if trades_for_80:
+                        if trades_for_80 <= reliability['trade_count']:
+                            st.metric("Trades for 80% Confidence", f"{trades_for_80}", delta="Already met!", delta_color="normal")
+                        else:
+                            st.metric("Trades for 80% Confidence", f"{trades_for_80}", delta=f"Need {trades_for_80 - reliability['trade_count']} more", delta_color="inverse")
+                    else:
+                        st.metric("Trades for 80% Confidence", "N/A", help="May not be achievable with current edge")
+
+                # Outcome range visualization
+                st.markdown("**Simulated Outcome Range** (based on 10,000 simulations)")
+                outcome_chart = create_outcome_range_chart(
+                    prob_result['percentile_5'],
+                    prob_result['median_pnl'],
+                    prob_result['percentile_95'],
+                    prob_result['expected_pnl'],
+                    title=""
+                )
+                st.plotly_chart(outcome_chart, use_container_width=True)
+
+                st.caption("This shows the range of likely total P/L outcomes. The gray bar covers 90% of simulated outcomes.")
+
+                # Probability curve (collapsible within)
+                with st.expander("How probability changes with more trades", expanded=False):
+                    prob_curve = calculate_probability_curve(strategy_df)
+
+                    if prob_curve['trade_counts']:
+                        curve_chart = create_probability_curve(
+                            prob_curve['trade_counts'],
+                            prob_curve['probabilities'],
+                            current_trades=reliability['trade_count'],
+                            title="Probability of Profit vs Number of Trades"
+                        )
+                        st.plotly_chart(curve_chart, use_container_width=True)
+
+                        st.markdown("""
+                        **How to read this chart:**
+                        - The curve shows how probability of profit increases with more trades
+                        - The star marks your current trade count
+                        - If EV is positive, probability approaches 100% with enough trades
+                        - The 80% line is a common confidence threshold for trading decisions
+                        """)
+                    else:
+                        st.info("Not enough data to generate probability curve.")
+            else:
+                st.info("Not enough trades to calculate profitability probability.")
 
         st.markdown("---")
 

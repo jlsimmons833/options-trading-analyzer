@@ -582,3 +582,128 @@ def create_sensitivity_chart(base_ev, ev_without_best, ev_without_worst, title="
     )
 
     return fig
+
+
+def create_probability_curve(trade_counts, probabilities, current_trades=None, title="Probability of Profitability"):
+    """
+    Create a line chart showing probability of profitability vs number of trades.
+    """
+    fig = go.Figure()
+
+    # Main probability curve
+    fig.add_trace(go.Scatter(
+        x=trade_counts,
+        y=[p * 100 for p in probabilities],
+        mode='lines+markers',
+        name='Probability',
+        line=dict(color=COLORS['highlight'], width=2),
+        marker=dict(size=6),
+        hovertemplate='%{y:.1f}% at %{x} trades<extra></extra>',
+    ))
+
+    # Add confidence threshold lines
+    fig.add_hline(y=80, line_dash="dash", line_color=COLORS['positive'],
+                  annotation_text="80% confidence", annotation_position="right")
+    fig.add_hline(y=50, line_dash="dot", line_color=COLORS['neutral'],
+                  annotation_text="50% (coin flip)", annotation_position="right")
+
+    # Mark current trade count if provided
+    if current_trades and len(trade_counts) > 0:
+        # Find the closest probability for current trades
+        idx = min(range(len(trade_counts)), key=lambda i: abs(trade_counts[i] - current_trades))
+        current_prob = probabilities[idx] * 100
+
+        fig.add_trace(go.Scatter(
+            x=[current_trades],
+            y=[current_prob],
+            mode='markers',
+            name='Current',
+            marker=dict(size=15, color=COLORS['negative'], symbol='star'),
+            hovertemplate=f'Current: {current_prob:.1f}% at {current_trades} trades<extra></extra>',
+        ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Number of Trades",
+        yaxis_title="Probability of Profit (%)",
+        yaxis=dict(range=[0, 105]),
+        height=300,
+        showlegend=False,
+    )
+
+    return fig
+
+
+def create_outcome_range_chart(percentile_5, median, percentile_95, expected, title="Outcome Range"):
+    """
+    Create a visual showing the range of possible outcomes (5th, median, 95th percentile).
+    """
+    fig = go.Figure()
+
+    # Create a horizontal range visualization
+    fig.add_trace(go.Scatter(
+        x=[percentile_5, percentile_95],
+        y=[1, 1],
+        mode='lines',
+        line=dict(color='lightgray', width=20),
+        name='90% Range',
+        hoverinfo='skip',
+    ))
+
+    # Add markers for key percentiles
+    fig.add_trace(go.Scatter(
+        x=[percentile_5],
+        y=[1],
+        mode='markers+text',
+        marker=dict(size=15, color=COLORS['negative']),
+        text=[f'Worst 5%<br>${percentile_5:,.0f}'],
+        textposition='bottom center',
+        name='5th Percentile',
+        hovertemplate=f'5th Percentile: ${percentile_5:,.2f}<extra></extra>',
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=[median],
+        y=[1],
+        mode='markers+text',
+        marker=dict(size=18, color=COLORS['highlight']),
+        text=[f'Median<br>${median:,.0f}'],
+        textposition='top center',
+        name='Median',
+        hovertemplate=f'Median: ${median:,.2f}<extra></extra>',
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=[percentile_95],
+        y=[1],
+        mode='markers+text',
+        marker=dict(size=15, color=COLORS['positive']),
+        text=[f'Best 5%<br>${percentile_95:,.0f}'],
+        textposition='bottom center',
+        name='95th Percentile',
+        hovertemplate=f'95th Percentile: ${percentile_95:,.2f}<extra></extra>',
+    ))
+
+    # Add expected value marker
+    fig.add_trace(go.Scatter(
+        x=[expected],
+        y=[1],
+        mode='markers',
+        marker=dict(size=12, color='black', symbol='diamond'),
+        name='Expected',
+        hovertemplate=f'Expected: ${expected:,.2f}<extra></extra>',
+    ))
+
+    # Add zero line
+    fig.add_vline(x=0, line_dash="dash", line_color=COLORS['neutral'], line_width=1)
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Total P/L ($)",
+        yaxis=dict(visible=False, range=[0.5, 1.5]),
+        height=200,
+        showlegend=False,
+        margin=dict(t=40, b=60),
+    )
+
+    return fig

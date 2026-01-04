@@ -518,6 +518,231 @@ def calculate_ev_sensitivity(trades_df, exclude_n=1):
     return (base_ev, ev_without_best, ev_without_worst, sensitivity)
 
 
+def calculate_profitability_probability(trades_df, num_trades=None, simulations=10000):
+    """
+    Calculate the probability of being profitable over N trades using Monte Carlo simulation.
+
+    Uses historical win rate, win sizes, and loss sizes to simulate future outcomes.
+
+    Args:
+        trades_df: DataFrame with P/L column
+        num_trades: Number of trades to simulate (defaults to same as sample)
+        simulations: Number of Monte Carlo simulations
+
+    Returns: dict with:
+        - probability: probability of being profitable (0-1)
+        - expected_pnl: expected total P/L
+        - percentile_5: 5th percentile outcome (worst realistic case)
+        - percentile_95: 95th percentile outcome (best realistic case)
+        - median_pnl: median outcome
+    """
+    if len(trades_df) < MIN_TRADES_FOR_STATS:
+        return {
+            'probability': np.nan,
+            'expected_pnl': np.nan,
+            'percentile_5': np.nan,
+            'percentile_95': np.nan,
+            'median_pnl': np.nan,
+        }
+
+    if num_trades is None:
+        num_trades = len(trades_df)
+
+    # Get the actual P/L values for resampling
+    pnl_values = trades_df['P/L'].values
+
+    # Monte Carlo simulation - resample with replacement
+    np.random.seed(42)  # For reproducibility
+    simulation_results = []
+
+    for _ in range(simulations):
+        # Randomly sample num_trades from historical P/L
+        sampled_pnl = np.random.choice(pnl_values, size=num_trades, replace=True)
+        total_pnl = sampled_pnl.sum()
+        simulation_results.append(total_pnl)
+
+    simulation_results = np.array(simulation_results)
+
+    return {
+        'probability': (simulation_results > 0).mean(),
+        'expected_pnl': simulation_results.mean(),
+        'percentile_5': np.percentile(simulation_results, 5),
+        'percentile_95': np.percentile(simulation_results, 95),
+        'median_pnl': np.median(simulation_results),
+    }
+
+
+def calculate_probability_curve(trades_df, max_trades=None, steps=20):
+    """
+    Calculate probability of profitability for different numbers of trades.
+
+    Returns: dict with lists of trade counts and corresponding probabilities
+    """
+    if len(trades_df) < MIN_TRADES_FOR_STATS:
+        return {'trade_counts': [], 'probabilities': []}
+
+    if max_trades is None:
+        max_trades = max(len(trades_df) * 2, 100)
+
+    # Calculate for various trade counts
+    trade_counts = np.linspace(10, max_trades, steps).astype(int)
+    probabilities = []
+
+    pnl_values = trades_df['P/L'].values
+    np.random.seed(42)
+
+    for n_trades in trade_counts:
+        # Quick Monte Carlo with fewer simulations for speed
+        sim_results = []
+        for _ in range(1000):
+            sampled_pnl = np.random.choice(pnl_values, size=n_trades, replace=True)
+            sim_results.append(sampled_pnl.sum() > 0)
+        probabilities.append(np.mean(sim_results))
+
+    return {
+        'trade_counts': trade_counts.tolist(),
+        'probabilities': probabilities,
+    }
+
+
+def calculate_trades_for_confidence(trades_df, target_probability=0.80, max_search=500):
+    """
+    Calculate how many trades are needed to achieve a target probability of profitability.
+
+    Returns: number of trades needed, or None if not achievable within max_search
+    """
+    if len(trades_df) < MIN_TRADES_FOR_STATS:
+        return None
+
+    pnl_values = trades_df['P/L'].values
+    ev = pnl_values.mean()
+
+    # If EV is negative or zero, may never reach target
+    if ev <= 0:
+        return None
+
+    np.random.seed(42)
+
+    # Binary search for the number of trades needed
+    low, high = 5, max_search
+
+    while low < high:
+        mid = (low + high) // 2
+
+        # Quick Monte Carlo
+        profitable_count = 0
+        for _ in range(500):
+            sampled_pnl = np.random.choice(pnl_values, size=mid, replace=True)
+            if sampled_pnl.sum() > 0:
+                profitable_count += 1
+
+        prob = profitable_count / 500
+
+        if prob >= target_probability:
+            high = mid
+        else:
+            low = mid + 1
+
+    # Verify the result
+    if low >= max_search:
+        return None
+
+    return low
+
+
+def calculate_analytical_probability(trades_df, num_trades=None):
+    """
+    Calculate probability of profitability using normal approximation (CLT).
+
+    This is faster than Monte Carlo and gives a good estimate for larger samples.
+
+    Returns: probability of being profitable
+    """
+    from scipy import stats
+
+    if len(trades_df) < MIN_TRADES_FOR_STATS:
+        return np.nan
+
+    if num_trades is None:
+        num_trades = len(trades_df)
+
+    pnl = trades_df['P/L']
+    mean_pnl = pnl.mean()  # EV per trade
+    std_pnl = pnl.std()    # Std dev per trade
+
+    if std_pnl == 0:
+        return 1.0 if mean_pnl > 0 else 0.0
+
+    # For N trades:
+    # Total mean = N * mean_pnl
+    # Total std = sqrt(N) * std_pnl
+    # P(Total > 0) = P(Z > -N*mean / (sqrt(N)*std)) = P(Z > -sqrt(N) * mean/std)
+
+    z_score = np.sqrt(num_trades) * mean_pnl / std_pnl
+    probability = stats.norm.cdf(z_score)
+
+    return probability
+
+
+def interpret_profitability_probability(probability, ev, trade_count):
+    """
+    Generate interpretation of the profitability probability.
+
+    Returns: dict with verdict, color, and explanation
+    """
+    if pd.isna(probability):
+        return {
+            'verdict': 'Unknown',
+            'icon': '❓',
+            'color': 'gray',
+            'summary': 'Insufficient data to estimate profitability probability.',
+        }
+
+    if ev <= 0:
+        return {
+            'verdict': 'Negative Edge',
+            'icon': '🚫',
+            'color': 'red',
+            'summary': f'Strategy has negative or zero EV. Probability of profit: {probability*100:.0f}%',
+        }
+
+    if probability >= 0.90:
+        return {
+            'verdict': 'Very Likely Profitable',
+            'icon': '🎯',
+            'color': 'green',
+            'summary': f'{probability*100:.0f}% probability of profit over {trade_count} trades.',
+        }
+    elif probability >= 0.75:
+        return {
+            'verdict': 'Likely Profitable',
+            'icon': '👍',
+            'color': 'green',
+            'summary': f'{probability*100:.0f}% probability of profit over {trade_count} trades.',
+        }
+    elif probability >= 0.60:
+        return {
+            'verdict': 'Moderately Likely',
+            'icon': '📊',
+            'color': 'blue',
+            'summary': f'{probability*100:.0f}% probability of profit over {trade_count} trades.',
+        }
+    elif probability >= 0.50:
+        return {
+            'verdict': 'Coin Flip',
+            'icon': '🎲',
+            'color': 'orange',
+            'summary': f'{probability*100:.0f}% probability of profit - essentially 50/50.',
+        }
+    else:
+        return {
+            'verdict': 'Unlikely Profitable',
+            'icon': '⚠️',
+            'color': 'red',
+            'summary': f'Only {probability*100:.0f}% probability of profit over {trade_count} trades.',
+        }
+
+
 def interpret_ev_reliability(cv, sensitivity_score, trade_count):
     """
     Generate a synthesized interpretation of EV reliability based on
