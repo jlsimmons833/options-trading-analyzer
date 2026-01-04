@@ -70,65 +70,125 @@ MONTHS = {
     9: 'September', 10: 'October', 11: 'November', 12: 'December'
 }
 
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns([1, 2])
 
 with col1:
     period_type = st.radio(
         "Period Type",
-        options=['Quarter', 'Month'],
+        options=['Quarter', 'Date Range'],
         horizontal=True,
-        help="Analyze by calendar quarter or specific month"
+        help="Analyze by calendar quarter or custom recurring date range"
     )
 
 with col2:
     if period_type == 'Quarter':
-        target_period = st.selectbox(
-            "Target Quarter",
-            options=['All Quarters'] + QUARTERS,
-            key="target_quarter_select"
-        )
+        q_col1, q_col2 = st.columns(2)
+        with q_col1:
+            target_period = st.selectbox(
+                "Target Quarter",
+                options=['All Quarters'] + QUARTERS,
+                key="target_quarter_select"
+            )
+        with q_col2:
+            year_options = ['All Time', 'Last 12 Months'] + [str(y) for y in sorted(filtered_df['Year'].unique(), reverse=True)]
+            year_filter = st.selectbox(
+                "Year Range",
+                options=year_options,
+            )
     else:
-        month_options = ['All Months'] + [MONTHS[i] for i in range(1, 13)]
-        target_period = st.selectbox(
-            "Target Month",
-            options=month_options,
-            key="target_month_select"
-        )
+        # Custom date range - recurring across all years
+        st.markdown("**Recurring Date Range** (applied to all years)")
+        range_col1, range_col2, range_col3 = st.columns([2, 2, 1])
 
-with col3:
-    year_options = ['All Time', 'Last 12 Months'] + [str(y) for y in sorted(filtered_df['Year'].unique(), reverse=True)]
-    year_filter = st.selectbox(
-        "Year Range",
-        options=year_options,
-    )
+        with range_col1:
+            start_month = st.selectbox(
+                "Start Month",
+                options=list(MONTHS.values()),
+                index=0,
+                key="range_start_month"
+            )
+            start_day = st.number_input(
+                "Start Day",
+                min_value=1,
+                max_value=31,
+                value=1,
+                key="range_start_day"
+            )
+
+        with range_col2:
+            end_month = st.selectbox(
+                "End Month",
+                options=list(MONTHS.values()),
+                index=11,  # December
+                key="range_end_month"
+            )
+            end_day = st.number_input(
+                "End Day",
+                min_value=1,
+                max_value=31,
+                value=31,
+                key="range_end_day"
+            )
+
+        with range_col3:
+            year_options = ['All Years'] + [str(y) for y in sorted(filtered_df['Year'].unique(), reverse=True)]
+            year_filter = st.selectbox(
+                "Year",
+                options=year_options,
+                key="range_year_filter"
+            )
 
 # Apply scenario filters
 scenario_df = filtered_df.copy()
 
-# Apply period filter (quarter or month)
+# Apply period filter
 if period_type == 'Quarter':
     if target_period != 'All Quarters':
         scenario_df = scenario_df[scenario_df['Quarter'] == target_period]
     period_label = target_period
-else:
-    if target_period != 'All Months':
-        # Get month number from name
-        month_num = [k for k, v in MONTHS.items() if v == target_period][0]
-        scenario_df = scenario_df[scenario_df['Month'] == month_num]
-    period_label = target_period
 
-if year_filter == 'Last 12 Months':
-    cutoff = scenario_df['Date Opened'].max() - pd.Timedelta(days=365)
-    scenario_df = scenario_df[scenario_df['Date Opened'] >= cutoff]
-elif year_filter != 'All Time':
-    scenario_df = scenario_df[scenario_df['Year'] == int(year_filter)]
+    if year_filter == 'Last 12 Months':
+        cutoff = scenario_df['Date Opened'].max() - pd.Timedelta(days=365)
+        scenario_df = scenario_df[scenario_df['Date Opened'] >= cutoff]
+    elif year_filter != 'All Time':
+        scenario_df = scenario_df[scenario_df['Year'] == int(year_filter)]
+else:
+    # Custom date range filter
+    start_month_num = [k for k, v in MONTHS.items() if v == start_month][0]
+    end_month_num = [k for k, v in MONTHS.items() if v == end_month][0]
+
+    # Create month-day tuple for comparison
+    scenario_df['_month_day'] = list(zip(scenario_df['Month'], scenario_df['Date Opened'].dt.day))
+
+    start_tuple = (start_month_num, start_day)
+    end_tuple = (end_month_num, end_day)
+
+    if start_tuple <= end_tuple:
+        # Normal range (e.g., Jan 15 - Mar 30)
+        mask = (scenario_df['_month_day'] >= start_tuple) & (scenario_df['_month_day'] <= end_tuple)
+    else:
+        # Range spans year boundary (e.g., Nov 15 - Jan 15)
+        mask = (scenario_df['_month_day'] >= start_tuple) | (scenario_df['_month_day'] <= end_tuple)
+
+    scenario_df = scenario_df[mask].drop(columns=['_month_day'])
+
+    period_label = f"{start_month[:3]} {start_day} - {end_month[:3]} {end_day}"
+
+    if year_filter != 'All Years':
+        scenario_df = scenario_df[scenario_df['Year'] == int(year_filter)]
+        year_filter_display = year_filter
+    else:
+        year_filter_display = "All Years"
 
 if len(scenario_df) == 0:
     st.warning("No trades match the scenario criteria.")
     st.stop()
 
 # Strategy Performance for Selected Scenario
-st.header(f"Strategy Performance: {period_label} ({year_filter})")
+if period_type == 'Quarter':
+    st.header(f"Strategy Performance: {period_label} ({year_filter})")
+else:
+    st.header(f"Strategy Performance: {period_label} ({year_filter_display})")
 
 # Calculate metrics for scenario
 scenario_metrics = []
